@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Discover public subscription calendars and contribute reviewed updates."
+    />
+    <title>TimeGrid — Calendar repository</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/"
+        >▦ <span>TimeGrid</span><small>COMMUNITY</small></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="/">Explore</a><a href="/contribute">Contribute</a
+        ><a href="/dashboard">My proposals</a
+        ><a id="manage-link" href="/manage" hidden>Manage</a>
+      </nav>
+      <div id="account"></div>
+    </header>
+    <main id="app"><p>Loading calendars…</p></main>
+    <div id="notice" role="status" aria-live="polite"></div>
+    <dialog id="auth">
+      <form id="auth-form">
+        <button
+          type="button"
+          id="close-auth"
+          class="quiet close"
+          aria-label="Close"
+        >
+          ×
+        </button>
+        <p class="eyebrow">CONTRIBUTOR ACCESS</p>
+        <h2 id="auth-title">Welcome back</h2>
+        <p>
+          Browsing and subscribing are always open. Sign in to propose changes.
+        </p>
+        <label
+          >Username<input
+            name="username"
+            autocomplete="username"
+            required
+            minlength="3"
+            maxlength="40" /></label
+        ><label
+          >Password<input
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            maxlength="200"
+        /></label>
+        <p id="auth-error" role="alert"></p>
+        <button type="submit">Sign in</button
+        ><button type="button" id="toggle-auth" class="quiet">
+          Create an account
+        </button>
+      </form>
+    </dialog>
+  </body>
+</html>

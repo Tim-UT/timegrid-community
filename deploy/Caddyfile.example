@@ -1,0 +1,5 @@
+# Apply only after the production archive and calendar migration are verified.
+calendar.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:9210
+}
