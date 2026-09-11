@@ -35,7 +35,13 @@ Approval is one SQLite transaction. Pending/rejected proposals do not affect fee
 
 Combining calendars creates a snapshot with source revision references. Identical events are deduplicated; conflicting versions of the same UID/recurrence ID are rejected. Combined calendars do not automatically follow later source changes: publish another reviewed revision to refresh them.
 
-The editor preserves imported recurrence rules, occurrence overrides, timezones, and event UIDs. It edits recurring series through the parent event; individual overrides can be imported and edited as separate event definitions. It does not yet provide a visual recurrence-rule builder or month-grid drag-and-drop. Event dates use ISO format; all-day end dates are exclusive. Uploaded alarms are removed. Files are limited to 5 MB and calendars to 5,000 event definitions.
+The editor has a create/proposal mode switch, a month preview, and three entry types: events (start and end), deadlines (due date only), and notices (start only). Neither new-calendar submissions nor update proposals require a change explanation. Imports live beside the entry tools and can append an ICS file from the device or pull a published source from this site. A source must be explicitly loaded before submitting an update.
+
+Repeat controls support daily, weekly, monthly and yearly schedules, intervals, selected weekdays, end dates and occurrence counts. Imported rules are shown in ordinary words and preserved unless the contributor changes them. Date/time controls retain calendar timezones; all-day end dates are exclusive. The month preview expands recurring entries, exclusions and occurrence overrides, including daylight-saving transitions. Preview expansion is bounded to six weeks and 2,000 displayed occurrences, with a visible warning for unsupported or truncated rules. It does not offer drag-and-drop editing.
+
+Manager review includes a calendar preview and a full comparison: unchanged entries stay neutral, added entries are green, deleted entries red, and changed fields yellow with before/after values. Comparison ignores serialization timestamps, so unchanged entries do not appear as edits just because they were exported again.
+
+Deadlines are exported as standard ICS VTODO components with DUE and no DTSTART. Calendar clients vary in their support for tasks; the website preview always displays them. Notices are VEVENT components with DTSTART and no DTEND. Uploaded alarms are removed. Files are limited to 5 MB and calendars to 5,000 entry definitions.
 
 ## Deployment on your server
 
@@ -101,6 +107,7 @@ The backup uses SQLite's online backup API. The destination must not already exi
 ```sh
 .venv/bin/python -m pytest -q
 node --check static/app.js
+node --test tests/calendar-ui.test.cjs
 ```
 
 Tests exercise anonymous subscriptions and ETags, publication, authorization, CSRF enforcement, proposal privacy, rejection, stale approvals, recurring imports, named timezones, combination provenance, deletion, invalid events, migration privacy, legacy URLs and database restore integrity.

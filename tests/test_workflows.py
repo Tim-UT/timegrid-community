@@ -282,3 +282,143 @@ def test_migration_refuses_private_and_preserves_old_urls(setup, tmp_path):
     r = setup.test_cli_runner().invoke(args=["import-public", str(manifest)])
     assert r.exit_code != 0
     assert len(client(setup).get("/api/calendars").json["calendars"]) == 1
+
+
+def test_three_entry_types_repeat_preview_and_no_explanation(setup):
+    a = client(setup, "author")
+    m = client(setup, "manager")
+    c = content()
+    c["events"] = [
+        {
+            "uid": "event",
+            "type": "event",
+            "title": "Workshop",
+            "start": "2026-09-15T09:00",
+            "end": "2026-09-15T10:00",
+            "timezone": "America/Toronto",
+            "recurrence": "FREQ=WEEKLY;COUNT=3",
+        },
+        {
+            "uid": "deadline",
+            "type": "deadline",
+            "title": "Application due",
+            "start": "",
+            "end": "2026-09-16T17:00",
+            "timezone": "America/Toronto",
+            "recurrence": "FREQ=WEEKLY;COUNT=2",
+        },
+        {
+            "uid": "notice",
+            "type": "notice",
+            "title": "Results announced",
+            "start": "2026-09-18",
+            "end": "",
+            "recurrence": "",
+        },
+    ]
+    result = post(a, "/api/proposals", {"content": c})
+    assert result.status_code == 201, result.json
+    pid = result.json["id"]
+    record = a.get("/api/proposals").json["proposals"][0]
+    assert record["message"] == ""
+    view = post(
+        a,
+        "/api/preview",
+        {"content": record["content"], "start": "2026-09-01", "end": "2026-10-01"},
+    )
+    assert view.status_code == 200, view.json
+    assert len(view.json["events"]) == 6, view.json
+    assert not view.json["warnings"]
+    slug = post(m, f"/api/proposals/{pid}/review", {"decision": "accept"}).json["slug"]
+    raw = a.get("/feeds/" + slug + ".ics").data
+    from app import decode_ics
+
+    with setup.app_context():
+        roundtrip = decode_ics(raw)
+    due = next(e for e in roundtrip["events"] if e["type"] == "deadline")
+    assert not due["start"] and due["end"]
+    assert b"BEGIN:VTODO" in raw and b"DUE;TZID=America/Toronto:" in raw
+    current = a.get("/api/calendars/" + slug).json
+    current["content"]["events"][0]["title"] = "Workshop updated"
+    result = post(
+        a,
+        "/api/proposals",
+        {"content": current["content"], "target": current["id"], "base_revision": 1},
+    )
+    assert result.status_code == 201, result.json
+
+
+def test_semantic_diff_preserves_neutral_and_highlights_only_changed_fields(setup):
+    from app import changes, clean_content
+
+    with setup.app_context():
+        old = clean_content(content())
+        new = copy.deepcopy(old)
+        new["events"][0]["raw"] = new["events"][0]["raw"].replace(
+            "DTSTAMP:", "LAST-MODIFIED:"
+        )
+        assert len(changes(old, new)["unchanged"]) == 1
+        new["events"][0]["start"] = "2026-09-15T09:30:00-04:00"
+        diff = changes(old, new)
+        assert diff["edited"][0]["fields"] == ["start"]
+        assert not diff["unchanged"]
+
+
+def test_preview_exceptions_and_dst(setup):
+    a = client(setup, "author")
+    raw = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly\r\nDTSTART;TZID=America/Toronto:20261025T090000\r\nDTEND;TZID=America/Toronto:20261025T100000\r\nRRULE:FREQ=WEEKLY;UNTIL=20261122T235959\r\nEXDATE;TZID=America/Toronto:20261108T090000\r\nSUMMARY:Weekly\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    token = a.get("/api/session").json["csrf"]
+    r = a.post(
+        "/api/import",
+        data={"file": (io.BytesIO(raw), "dst.ics")},
+        headers={"X-CSRF-Token": token},
+    )
+    assert r.status_code == 200, r.json
+    view = post(
+        a,
+        "/api/preview",
+        {"content": r.json, "start": "2026-10-25", "end": "2026-11-30"},
+    )
+    assert view.status_code == 200, view.json
+    assert len(view.json["events"]) == 4, view.json
+    assert view.json["events"][0]["start"].endswith("-04:00")
+    assert view.json["events"][1]["start"].endswith("-05:00")
+    assert all("T09:00:00" in e["start"] for e in view.json["events"])
+    assert not view.json["warnings"]
+
+
+def test_invalid_entry_types_and_preview_window(setup):
+    a = client(setup, "author")
+    for kind, start, end in [
+        ("deadline", "2026-09-01", "2026-09-02"),
+        ("notice", "2026-09-01", "2026-09-02"),
+        ("event", "2026-09-01", ""),
+    ]:
+        c = content()
+        c["events"] = [
+            {"uid": "bad", "title": "Bad", "type": kind, "start": start, "end": end}
+        ]
+        assert post(a, "/api/proposals", {"content": c}).status_code == 400
+    assert (
+        post(
+            a,
+            "/api/preview",
+            {"content": content(), "start": "2020-01-01", "end": "2030-01-01"},
+        ).status_code
+        == 400
+    )
+    c = content()
+    c["events"][0]["recurrence"] = "FREQ=WEEKLY;INTERVAL=0"
+    assert post(a, "/api/proposals", {"content": c}).status_code == 400
+
+
+def test_retimed_named_zone_entry_remains_in_preview(setup):
+    a = client(setup, "author")
+    c = content()
+    c["events"][0].update(timezone="America/Toronto", start="2026-09-15T09:30:00-04:00")
+    r = post(
+        a, "/api/preview", {"content": c, "start": "2026-09-01", "end": "2026-10-01"}
+    )
+    assert r.status_code == 200, r.json
+    assert len(r.json["events"]) == 1 and not r.json["warnings"], r.json
+    assert r.json["events"][0]["start"] == "2026-09-15T09:30:00-04:00"

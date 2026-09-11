@@ -11,3 +11,5 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
       - run: node --check static/app.js
+      - run: node --check static/calendar-ui.js
+      - run: node --test tests/calendar-ui.test.cjs

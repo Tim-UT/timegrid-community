@@ -48,7 +48,7 @@ function safe(fn) {
   };
 }
 function eventView(e) {
-  return `<div class="event"><div class="event-date">${esc(e.start)}${e.end ? " → " + esc(e.end) : ""}</div><h3>${esc(e.title)}</h3>${e.location ? `<p>${esc(e.location)}</p>` : ""}${e.description ? `<p>${esc(e.description)}</p>` : ""}${e.recurrence ? `<span class="pill">Repeats · ${esc(e.recurrence)}</span>` : ""}</div>`;
+  return `<div class="event"><span class="pill">${esc(CalendarUI.kind(e))}</span><div class="event-date">${esc(CalendarUI.timing(e))}</div><h3>${esc(e.title)}</h3>${e.location ? `<p>${esc(e.location)}</p>` : ""}${e.description ? `<p>${esc(e.description)}</p>` : ""}${e.recurrence ? `<span class="pill">${esc(CalendarUI.recurrenceText(e.recurrence, e.start || e.end))}</span>` : ""}</div>`;
 }
 function accounts() {
   const u = auth.user;
@@ -144,7 +144,7 @@ async function detail(slug) {
     content.events.length
       ? content.events
           .slice()
-          .sort((a, b) => a.start.localeCompare(b.start))
+          .sort((a, b) => (a.start || a.end).localeCompare(b.start || b.end))
           .map(eventView)
           .join("")
       : "<p>This calendar has no events.</p>"
@@ -173,10 +173,23 @@ function blank() {
 }
 async function editor() {
   if (!gate()) return;
-  const params = new URLSearchParams(location.search);
+  const UI = CalendarUI,
+    params = new URLSearchParams(location.search);
+  const catalog = (await api("/api/calendars")).calendars;
   target = null;
   base = 0;
   draft = blank();
+  let mode = params.has("edit") ? "proposal" : "create",
+    previewPanel,
+    timer;
+  const normalize = (e) => ({
+    ...e,
+    type: UI.kind(e),
+    timezone:
+      e.timezone ||
+      e.raw?.match(/(?:DTSTART|DUE);TZID=([^:;\r\n]+)/)?.[1] ||
+      ((e.start || e.end || "").endsWith("Z") ? "UTC" : ""),
+  });
   if (params.get("edit")) {
     const c = await api(
       "/api/calendars/" + encodeURIComponent(params.get("edit")),
@@ -184,79 +197,392 @@ async function editor() {
     draft = c.content;
     target = c.id;
     base = c.revision;
-  } else if (params.get("combine")) {
+  } else if (params.get("combine"))
     draft = await api("/api/combine", {
       method: "POST",
       body: { ids: params.get("combine").split(",") },
     });
-  }
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">CONTRIBUTION EDITOR</p><h1>${target ? "Propose a calendar update" : "Build a calendar worth sharing."}</h1><p>${target ? `Editing published revision ${base}. Your changes go to a manager for review.` : "Upload an ICS calendar or start with your own events."}</p></div><a href="/">← Explore calendars</a></div><div class="split"><form id="editor" class="panel"><label>Calendar title<input name="title" maxlength="160" required></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Events <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add event</button></div><div id="events"></div><label>What does this proposal change?<textarea name="message" maxlength="4000" required placeholder="Explain the source and the changes for the manager."></textarea></label><button type="submit">Submit for review</button></form><aside class="stack"><section class="panel"><p class="eyebrow">IMPORT</p><h3>Bring your calendar</h3><p class="hint">ICS files preserve recurrence rules and timezones. Import replaces the events in this draft.</p><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></section><section class="panel"><h3>How review works</h3><p class="hint">1. Prepare your events and hashtags.<br>2. Submit a proposal with a short explanation.<br>3. A manager reviews the changes and publishes or rejects them.</p><p class="hint">Published calendars stay unchanged while a proposal is pending. Track feedback in My proposals.</p>${draft.sources.length ? `<p class="hint">Combined from ${draft.sources.length} published calendar revisions.</p>` : ""}</section><section class="panel"><h3>Dates & recurrence</h3><p class="hint">Use YYYY-MM-DD for all-day events, or an ISO date-time such as 2026-09-15T09:00:00-04:00. All-day end dates are exclusive. Imported recurrence rules stay attached to their event; editing a recurring event changes its series.</p></section></aside></div>`;
+  draft.events = draft.events.map(normalize);
+  const options =
+    '<option value="">Choose a published calendar</option>' +
+    catalog
+      .map(
+        (c) =>
+          `<option value="${esc(c.id)}">${esc(c.title)} · revision ${c.revision}</option>`,
+      )
+      .join("");
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">CALENDAR EDITOR</p><h1 id="editor-heading"></h1><p id="mode-help"></p></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-mode="create">Create mode</button><button type="button" data-mode="proposal">Proposal mode</button></div></div><div class="proposal-source panel" id="proposal-source"><label>Calendar to update<select id="target-calendar">${options}</select></label><button type="button" class="quiet" id="load-target">Load calendar to edit</button><p class="hint" id="target-status"></p></div><div class="editor-layout"><form id="editor" class="panel editor-form"><label>Calendar title<input name="title" required maxlength="160"></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Entries <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add entry</button></div><details class="import-tools"><summary>Import entries</summary><div class="import-switch" role="group" aria-label="Import source"><button type="button" class="quiet" data-import="device" aria-pressed="true">Upload from device</button><button type="button" class="quiet" data-import="site" aria-pressed="false">Pull from this site</button></div><div id="device-import"><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></div><div id="site-import" hidden><label>Published calendar<select id="source-calendar">${options}</select></label><button type="button" class="quiet" id="pull-calendar">Add its entries</button></div><p class="hint">Imported entries are added to this draft. Your existing entries stay in place.</p></details><div id="events"></div><div class="submit-bar"><button type="submit" id="submit-draft"></button><p class="hint">A manager reviews the calendar before it is published.</p></div></form><section class="panel editor-preview" id="editor-preview" aria-label="Draft calendar preview"></section></div>`;
   const form = $("#editor");
   function metadata() {
     form.elements.title.value = draft.title;
     form.elements.description.value = draft.description;
     form.elements.hashtags.value = draft.hashtags.join(", ");
   }
-  metadata();
-  renderEvents();
-  form.oninput = () => {
-    dirty = true;
-  };
-  $("#add-event").onclick = () => {
-    syncEvents();
-    draft.events.push({
-      uid: crypto.randomUUID() + "@timegrid",
-      title: "New event",
-      start: new Date().toISOString().slice(0, 10),
-      end: "",
-      description: "",
-      location: "",
-      raw: "",
-      recurrence: "",
+  function sync() {
+    document.querySelectorAll(".event-editor").forEach((box) => {
+      const e = draft.events[Number(box.dataset.index)];
+      const allDay = box.querySelector("[data-all-day]").checked;
+      box.querySelectorAll("[data-field]").forEach((input) => {
+        const field = input.dataset.field;
+        let val = input.value;
+        if ((field === "start" || field === "end") && val) {
+          const old = e[field] || "";
+          if ((allDay ? old.slice(0, 10) : old.slice(0, 16)) === val) val = old;
+        }
+        e[field] = val;
+      });
+      e.type = box.querySelector("[data-kind]").value;
+      if (e.type === "deadline") e.start = "";
+      if (e.type === "notice") e.end = "";
+      const freq = box.querySelector("[data-repeat]").value;
+      if (freq !== "keep") {
+        if (freq === "none") e.recurrence = "";
+        else {
+          const interval = Number(box.querySelector("[data-interval]").value);
+          let r = `FREQ=${freq};INTERVAL=${interval || 1}`;
+          if (freq === "WEEKLY") {
+            const days = [
+              ...box.querySelectorAll("[data-weekday]:checked"),
+            ].map((x) => x.value);
+            if (days.length) r += ";BYDAY=" + days.join(",");
+          }
+          const ending = box.querySelector("[data-ending]").value;
+          if (ending === "count")
+            r += ";COUNT=" + box.querySelector("[data-count]").value;
+          if (ending === "until") {
+            const date = box
+              .querySelector("[data-until]")
+              .value.replaceAll("-", "");
+            if (date) r += ";UNTIL=" + date + (allDay ? "" : "T235959");
+          }
+          e.recurrence = r;
+        }
+      }
+      box.querySelector(".entry-title").textContent =
+        e.title || "Untitled entry";
+      box.querySelector(".entry-summary").textContent = UI.timing(e);
+      box.querySelector(".repeat-summary").textContent = UI.recurrenceText(
+        e.recurrence,
+        e.start || e.end,
+      );
     });
-    dirty = true;
-    renderEvents();
-    const last = $("#events").lastElementChild;
-    last.open = true;
-    last.querySelector("input").focus();
-  };
-  $("#upload").onchange = safe(async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024)
-      throw Error("Choose a file smaller than 5 MB.");
-    if (
-      draft.events.length &&
-      !confirm("Replace the events in this draft with the uploaded calendar?")
-    )
-      return;
-    const body = new FormData();
-    body.append("file", file);
-    const imported = await api("/api/import", { method: "POST", body });
-    draft = { ...imported, sources: draft.sources };
-    metadata();
-    renderEvents();
-    dirty = true;
-    notify("Calendar imported. Review the events before submitting.");
-  });
-  form.onsubmit = safe(async (e) => {
-    e.preventDefault();
-    syncEvents();
     draft.title = form.elements.title.value;
     draft.description = form.elements.description.value;
     draft.hashtags = form.elements.hashtags.value
       .split(/[,\s]+/)
       .filter(Boolean);
-    const button = form.querySelector("[type=submit]");
+  }
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => previewPanel?.refresh(), 450);
+  }
+  function modeUI() {
+    document
+      .querySelectorAll("[data-mode]")
+      .forEach((b) =>
+        b.setAttribute("aria-pressed", String(b.dataset.mode === mode)),
+      );
+    $("#proposal-source").hidden = mode !== "proposal";
+    $("#editor-heading").textContent =
+      mode === "create" ? "Create a calendar" : "Propose a calendar update";
+    $("#mode-help").textContent =
+      mode === "create"
+        ? "Build a new source from your own entries or existing calendars."
+        : "Load a published calendar, then propose your changes.";
+    $("#submit-draft").textContent =
+      mode === "create" ? "Submit new calendar" : "Submit update proposal";
+    $("#target-status").textContent = target
+      ? `Editing revision ${base}. Switching modes keeps your current draft.`
+      : "Choose and load a calendar before submitting an update.";
+    if (target) $("#target-calendar").value = target;
+  }
+  document.querySelectorAll("[data-mode]").forEach(
+    (b) =>
+      (b.onclick = () => {
+        sync();
+        mode = b.dataset.mode;
+        modeUI();
+        dirty = true;
+      }),
+  );
+  $("#load-target").onclick = safe(async () => {
+    const id = $("#target-calendar").value;
+    if (!id) throw Error("Choose a calendar to update.");
+    if (dirty && !confirm("Load this calendar and replace the current draft?"))
+      return;
+    const c = await api("/api/calendars/" + encodeURIComponent(id));
+    target = c.id;
+    base = c.revision;
+    draft = c.content;
+    draft.events = draft.events.map(normalize);
+    metadata();
+    renderEntries();
+    modeUI();
+    dirty = false;
+    previewPanel.focus(draft.events[0]?.start || draft.events[0]?.end);
+  });
+  function renderEntries() {
+    $("#event-count").textContent = `(${draft.events.length})`;
+    $("#events").innerHTML =
+      draft.events
+        .map((e, i) => {
+          const allDay = (e.start || e.end || "").length === 10,
+            t = e.type;
+          return `<details class="event-editor" data-index="${i}"><summary><span class="entry-title">${esc(e.title || "Untitled entry")}</span><span class="meta entry-summary">${esc(UI.timing(e))}</span></summary><label>Entry type<select data-kind>${["event", "deadline", "notice"].map((k) => `<option value="${k}" ${t === k ? "selected" : ""}>${k === "event" ? "Event — start and end" : k === "deadline" ? "Deadline — due date only" : "Notice — start only"}</option>`).join("")}</select></label><label>Title<input data-field="title" value="${esc(e.title)}" maxlength="300" required></label><label class="check"><input type="checkbox" data-all-day ${allDay ? "checked" : ""}>All day</label><div class="event-grid"><label data-start-label ${t === "deadline" ? "hidden" : ""}>Start<input data-field="start" type="${allDay ? "date" : "datetime-local"}" value="${esc((e.start || "").slice(0, allDay ? 10 : 16))}" ${t === "deadline" ? "disabled" : "required"}></label><label data-end-label ${t === "notice" ? "hidden" : ""}>${t === "deadline" ? "Due" : "End"}<input data-field="end" type="${allDay ? "date" : "datetime-local"}" value="${esc((e.end || "").slice(0, allDay ? 10 : 16))}" ${t === "notice" ? "disabled" : "required"}></label></div><p class="hint date-help">${allDay && t === "event" ? "All-day end dates are exclusive: a one-day event ends on the following date." : t === "deadline" ? "This entry appears at its due date." : t === "notice" ? "This entry appears at its start." : "Set the start and end of this event."}</p><label class="zone-label" ${allDay ? "hidden" : ""}>Time zone<input data-field="timezone" value="${esc(e.timezone || "")}" placeholder="America/Toronto"></label><label>Location<input data-field="location" value="${esc(e.location)}"></label><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label><fieldset class="repeat-settings"><legend>Repeat</legend><p class="hint repeat-summary">${esc(UI.recurrenceText(e.recurrence, e.start || e.end))}</p><label>Repeats<select data-repeat>${e.recurrence ? '<option value="keep">Keep existing schedule</option>' : ""}<option value="none">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label><div class="repeat-options" hidden><label>Repeat every<input data-interval type="number" min="1" max="999" value="1"><span class="hint interval-unit"></span></label><div class="weekdays" hidden>${Object.entries(
+            {
+              MO: "Mon",
+              TU: "Tue",
+              WE: "Wed",
+              TH: "Thu",
+              FR: "Fri",
+              SA: "Sat",
+              SU: "Sun",
+            },
+          )
+            .map(
+              ([k, v]) =>
+                `<label class="check"><input type="checkbox" data-weekday value="${k}">${v}</label>`,
+            )
+            .join(
+              "",
+            )}</div><label>Ends<select data-ending><option value="never">Never</option><option value="until">On a date</option><option value="count">After a number of occurrences</option></select></label><label class="until-label" hidden>Last date<input type="date" data-until disabled></label><label class="count-label" hidden>Occurrences<input type="number" data-count min="1" max="10000" value="10" disabled></label></div></fieldset><button type="button" class="danger delete-event">Delete entry</button></details>`;
+        })
+        .join("") ||
+      '<p class="hint">Add an entry or import a calendar to get started.</p>';
+    document.querySelectorAll(".event-editor").forEach((box) => {
+      const index = Number(box.dataset.index);
+      box.querySelector(".delete-event").onclick = () => {
+        sync();
+        draft.events.splice(index, 1);
+        dirty = true;
+        renderEntries();
+        schedule();
+      };
+      box.querySelector("[data-kind]").onchange = () => {
+        const e = draft.events[index],
+          next = box.querySelector("[data-kind]").value;
+        const anchor = e.start || e.end;
+        sync();
+        e.type = next;
+        if (next === "deadline") {
+          e.end = e.end || anchor;
+          e.start = "";
+        } else if (next === "notice") {
+          e.start = e.start || anchor;
+          e.end = "";
+        } else {
+          e.start = e.start || anchor;
+          if (!e.end || e.end === e.start) e.end = nextEnd(e.start);
+        }
+        renderEntries();
+        const updated = document.querySelector(
+          `.event-editor[data-index="${index}"]`,
+        );
+        updated.open = true;
+        dirty = true;
+        schedule();
+      };
+      box.querySelector("[data-all-day]").onchange = () => {
+        const checked = box.querySelector("[data-all-day]").checked;
+        const e = draft.events[index];
+        sync();
+        for (const k of ["start", "end"])
+          if (e[k])
+            e[k] = checked ? e[k].slice(0, 10) : e[k].slice(0, 10) + "T09:00";
+        if (e.type === "event" && e.start === e.end) e.end = nextEnd(e.start);
+        renderEntries();
+        document.querySelector(`.event-editor[data-index="${index}"]`).open =
+          true;
+        dirty = true;
+        schedule();
+      };
+      const repeatUI = () => {
+        const freq = box.querySelector("[data-repeat]").value,
+          active = !["keep", "none"].includes(freq);
+        box.querySelector(".repeat-options").hidden = !active;
+        box.querySelector(".weekdays").hidden = freq !== "WEEKLY";
+        box.querySelector(".interval-unit").textContent =
+          {
+            DAILY: "day(s)",
+            WEEKLY: "week(s)",
+            MONTHLY: "month(s)",
+            YEARLY: "year(s)",
+          }[freq] || "";
+        const ending = box.querySelector("[data-ending]").value;
+        for (const name of ["until", "count"]) {
+          const enabled = active && ending === name;
+          box.querySelector("." + name + "-label").hidden = !enabled;
+          box.querySelector("[data-" + name + "]").disabled = !enabled;
+          box.querySelector("[data-" + name + "]").required = enabled;
+        }
+        box.querySelector("[data-interval]").disabled = !active;
+      };
+      box.querySelector("[data-repeat]").onchange = () => {
+        repeatUI();
+        sync();
+        box.querySelector(".repeat-summary").textContent = UI.recurrenceText(
+          draft.events[index].recurrence,
+          draft.events[index].start || draft.events[index].end,
+        );
+        dirty = true;
+        schedule();
+      };
+      box.querySelector("[data-ending]").onchange = () => {
+        repeatUI();
+        dirty = true;
+        schedule();
+      };
+    });
+  }
+  function nextEnd(start) {
+    const day = start?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    if (start?.includes("T")) {
+      const d = new Date(start);
+      d.setHours(d.getHours() + 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+    const d = new Date(day + "T12:00:00");
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  $("#add-event").onclick = () => {
+    sync();
+    const start = new Date().toISOString().slice(0, 10);
+    draft.events.push({
+      uid: crypto.randomUUID() + "@timegrid",
+      title: "New event",
+      type: "event",
+      start,
+      end: nextEnd(start),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      description: "",
+      location: "",
+      recurrence: "",
+      raw: "",
+    });
+    dirty = true;
+    renderEntries();
+    const last = $("#events").lastElementChild;
+    last.open = true;
+    last.querySelector("[data-field=title]").focus();
+    previewPanel.focus(start);
+  };
+  function mergeImported(imported, source) {
+    sync();
+    const combined = structuredClone(draft),
+      map = new Map(combined.events.map((e) => [UI.key(e), e]));
+    for (const incoming of imported.events.map(normalize)) {
+      const old = map.get(UI.key(incoming));
+      if (old) {
+        const fields = [
+          "title",
+          "type",
+          "start",
+          "end",
+          "description",
+          "location",
+          "recurrence",
+        ];
+        const exceptions = (e) =>
+          (e.raw || "")
+            .replace(/\r?\n[ \t]/g, "")
+            .split(/\r?\n/)
+            .filter((line) => /^(EXDATE|RDATE|RECURRENCE-ID)[;:]/.test(line))
+            .sort()
+            .join("|");
+        if (
+          fields.some((k) => (old[k] || "") !== (incoming[k] || "")) ||
+          exceptions(old) !== exceptions(incoming)
+        )
+          throw Error(
+            "An imported entry conflicts with one in your draft. Resolve the source first.",
+          );
+      } else {
+        combined.events.push(incoming);
+        map.set(UI.key(incoming), incoming);
+      }
+    }
+    const zones = new Map();
+    for (const raw of [...combined.timezones, ...imported.timezones]) {
+      const id = raw.match(/TZID:([^\r\n]+)/)?.[1] || raw;
+      if (zones.has(id) && zones.get(id) !== raw)
+        throw Error("These calendars use conflicting time zone definitions.");
+      zones.set(id, raw);
+    }
+    combined.timezones = [...zones.values()];
+    if (!combined.title) combined.title = imported.title;
+    if (!combined.description) combined.description = imported.description;
+    if (
+      source &&
+      !combined.sources.some(
+        (s) => s.id === source.id && s.revision === source.revision,
+      )
+    )
+      combined.sources.push(source);
+    combined.hashtags = [
+      ...new Set([...combined.hashtags, ...imported.hashtags]),
+    ].slice(0, 12);
+    draft = combined;
+    metadata();
+    renderEntries();
+    dirty = true;
+    previewPanel.focus(imported.events[0]?.start || imported.events[0]?.end);
+    notify("Entries added to your draft.");
+  }
+  document.querySelectorAll("[data-import]").forEach(
+    (b) =>
+      (b.onclick = () => {
+        document
+          .querySelectorAll("[data-import]")
+          .forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        $("#device-import").hidden = b.dataset.import !== "device";
+        $("#site-import").hidden = b.dataset.import !== "site";
+      }),
+  );
+  $("#upload").onchange = safe(async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024)
+      throw Error("Choose a file smaller than 5 MB.");
+    const body = new FormData();
+    body.append("file", file);
+    mergeImported(await api("/api/import", { method: "POST", body }));
+    e.target.value = "";
+  });
+  $("#pull-calendar").onclick = safe(async () => {
+    const id = $("#source-calendar").value;
+    if (!id) throw Error("Choose a calendar to pull.");
+    const c = await api("/api/calendars/" + encodeURIComponent(id));
+    mergeImported(c.content, { id: c.id, revision: c.revision });
+  });
+  form.addEventListener("input", (event) => {
+    if (event.target.matches("[data-kind]")) return;
+    dirty = true;
+    sync();
+    schedule();
+  });
+  form.addEventListener("change", () => {
+    dirty = true;
+    sync();
+    schedule();
+  });
+  form.onsubmit = safe(async (e) => {
+    e.preventDefault();
+    sync();
+    if (
+      mode === "proposal" &&
+      (!target || $("#target-calendar").value !== target)
+    )
+      throw Error("Load the published calendar you want to update.");
+    const button = $("#submit-draft");
     button.disabled = true;
     try {
       await api("/api/proposals", {
         method: "POST",
         body: {
-          target,
-          base_revision: base,
+          target: mode === "proposal" ? target : null,
+          base_revision: mode === "proposal" ? base : 0,
           content: draft,
-          message: form.elements.message.value,
         },
       });
       dirty = false;
@@ -265,56 +591,114 @@ async function editor() {
       button.disabled = false;
     }
   });
-}
-function syncEvents() {
-  document.querySelectorAll(".event-editor").forEach((box) => {
-    const e = draft.events[Number(box.dataset.index)];
-    box
-      .querySelectorAll("[data-field]")
-      .forEach((input) => (e[input.dataset.field] = input.value));
+  metadata();
+  renderEntries();
+  modeUI();
+  previewPanel = UI.monthPreview($("#editor-preview"), {
+    initial: draft.events[0]?.start || draft.events[0]?.end,
+    load: async (start, end) => {
+      sync();
+      const visible = structuredClone(draft);
+      visible.events = visible.events.filter(
+        (e) =>
+          e.title &&
+          (e.type === "event"
+            ? e.start && e.end
+            : e.type === "deadline"
+              ? e.end
+              : e.start),
+      );
+      const result = await api("/api/preview", {
+        method: "POST",
+        body: { content: visible, start, end },
+      });
+      if (visible.events.length !== draft.events.length)
+        result.warnings.push(
+          "Finish the dates and title of incomplete entries to see them here.",
+        );
+      return result;
+    },
+    onSelect: (e) => {
+      const i = draft.events.findIndex((item) => UI.key(item) === e.key);
+      const box = document.querySelector(`.event-editor[data-index="${i}"]`);
+      if (box) {
+        box.open = true;
+        box.scrollIntoView({ behavior: "smooth", block: "center" });
+        box.querySelector("[data-field=title]").focus();
+      }
+    },
   });
 }
-function renderEvents() {
-  $("#event-count").textContent = `(${draft.events.length})`;
-  $("#events").innerHTML =
-    draft.events
-      .map(
-        (e, i) =>
-          `<details class="event-editor" data-index="${i}"><summary>${esc(e.title)} <span class="meta">· ${esc(e.start)}</span></summary><div class="event-grid">${[
-            ["title", "Event title"],
-            ["start", "Start"],
-            ["end", "End (optional)"],
-            ["location", "Location"],
+
+function diffView(d) {
+  const UI = CalendarUI;
+  const names = {
+    title: "Title",
+    type: "Entry type",
+    start: "Start",
+    end: "End / due",
+    location: "Location",
+    description: "Description",
+    recurrence: "Repeats",
+    timezone: "Time zone",
+    exceptions: "Occurrence exceptions",
+    hashtags: "Hashtags",
+    sources: "Sources",
+  };
+  function value(field, v, e) {
+    if (field === "recurrence") return UI.recurrenceText(v, e?.start || e?.end);
+    if (field === "start" || field === "end")
+      return v ? UI.dateText(v) : "None";
+    if (field === "hashtags")
+      return v?.length ? v.map((t) => "#" + t).join(", ") : "None";
+    if (field === "sources")
+      return v?.length
+        ? v.map((s) => "Source calendar · revision " + s.revision).join("; ")
+        : "None";
+    if (field === "exceptions") return "Occurrence dates updated";
+    return v || "None";
+  }
+  const metadata = Object.entries(d.metadata)
+    .map(
+      ([field, v]) =>
+        `<div class="field-diff change-edited"><strong>${esc(names[field] || field)}</strong><span><del>${esc(value(field, v.before))}</del> → <ins>${esc(value(field, v.after))}</ins></span></div>`,
+    )
+    .join("");
+  const entries = [
+    ...(d.unchanged || []).map((e) => ({ e, status: "unchanged" })),
+    ...d.added.map((e) => ({ e, status: "added" })),
+    ...d.deleted.map((e) => ({ e, status: "deleted" })),
+    ...d.edited.map((x) => ({
+      e: x.after,
+      status: "edited",
+      before: x.before,
+      fields: x.fields,
+    })),
+  ].sort((a, b) => (a.e.start || a.e.end).localeCompare(b.e.start || b.e.end));
+  return `<div class="change-legend"><span>Unchanged</span><span class="change-added">+ Added</span><span class="change-deleted">− Deleted</span><span class="change-edited">~ Changed</span></div>${metadata}<div class="review-entries">${entries
+    .map(({ e, status, before, fields }) =>
+      status === "edited"
+        ? `<article class="review-entry"><p class="meta">Changed entry</p>${[
+            "title",
+            "type",
+            "start",
+            "end",
+            "location",
+            "description",
+            "recurrence",
+            "timezone",
           ]
-            .map(
-              ([k, label]) =>
-                `<label>${label}<input data-field="${k}" value="${esc(e[k])}" ${k === "title" || k === "start" ? "required" : ""}></label>`,
-            )
+            .map((field) => {
+              const changed = fields?.includes(field);
+              if (!changed && !e[field] && field !== "type") return "";
+              return `<div class="field-diff ${changed ? "change-edited" : ""}"><strong>${esc(names[field])}</strong><span>${changed ? `<del>${esc(value(field, before[field], before))}</del> → <ins>${esc(value(field, e[field], e))}</ins>` : esc(value(field, field === "type" ? UI.kind(e) : e[field], e))}</span></div>`;
+            })
             .join(
               "",
-            )}</div><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label>${e.recurrence ? `<p class="hint">Preserved recurrence: ${esc(e.recurrence)}</p>` : ""}${e.recurrence_id ? `<p class="hint">Occurrence override: ${esc(e.recurrence_id)}</p>` : ""}<button type="button" class="danger delete-event" data-index="${i}">Delete event</button></details>`,
-      )
-      .join("") ||
-    '<p class="hint">No events yet. Add an event or import an ICS file.</p>';
-  document.querySelectorAll(".delete-event").forEach(
-    (b) =>
-      (b.onclick = () => {
-        syncEvents();
-        draft.events.splice(Number(b.dataset.index), 1);
-        dirty = true;
-        renderEvents();
-      }),
-  );
-}
-function diffView(d) {
-  return `${Object.entries(d.metadata)
-    .map(
-      ([k, v]) =>
-        `<div class="diff"><strong>${esc(k)}</strong><p class="hint">Before: ${esc(JSON.stringify(v.before ?? ""))}<br>After: ${esc(JSON.stringify(v.after))}</p></div>`,
+            )}${fields?.includes("exceptions") ? '<p class="change-edited">Occurrence exception dates changed.</p>' : ""}</article>`
+        : `<article class="review-entry change-${status}"><strong class="review-status">${status === "added" ? "+ Added" : status === "deleted" ? "− Deleted" : "Unchanged"}</strong>${eventView(e)}</article>`,
     )
-    .join(
-      "",
-    )}${d.added.map((e) => `<div class="diff add"><strong>Added</strong>${eventView(e)}</div>`).join("")}${d.deleted.map((e) => `<div class="diff delete"><strong>Deleted</strong>${eventView(e)}</div>`).join("")}${d.edited.map((e) => `<div class="diff"><strong>Edited · before</strong>${eventView(e.before)}<strong>After</strong>${eventView(e.after)}</div>`).join("")}`;
+    .join("")}</div>`;
 }
 async function dashboard(manager = false) {
   if (!gate(manager)) return;
@@ -322,7 +706,54 @@ async function dashboard(manager = false) {
   const rows = manager
     ? proposals
     : proposals.filter((p) => p.author === auth.user.id);
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">${manager ? "MANAGER WORKSPACE" : "CONTRIBUTOR WORKSPACE"}</p><h1>${manager ? "Review the next revision." : "Your contributions."}</h1><p>${manager ? "Check event changes, sources, and hashtags before publishing." : "Follow your submissions and read manager feedback."}</p></div><a class="button" href="/contribute">+ New calendar</a></div><div class="tools"><span class="pill pending">${rows.filter((p) => p.status === "pending").length} pending</span><span class="pill accepted">${rows.filter((p) => p.status === "accepted").length} accepted</span><span class="pill rejected">${rows.filter((p) => p.status === "rejected").length} rejected</span></div><section>${rows.map((p) => `<article class="panel review"><div class="row between"><h2>${esc(p.content.title)}</h2><span class="pill ${p.status}">${esc(p.status)}</span></div><p class="meta">${esc(p.username)} · ${esc(p.created_at.slice(0, 10))} · ${p.target ? "Update to revision " + p.base_revision : "New calendar"}</p><p>${esc(p.message)}</p><div class="tags">${tags(p.content.hashtags)}</div><p class="meta">+${p.changes.added.length} added · ${p.changes.edited.length} edited · −${p.changes.deleted.length} deleted</p><details><summary>Review all changes</summary>${diffView(p.changes)}</details>${p.reason ? `<p><strong>Manager feedback:</strong> ${esc(p.reason)}</p>` : ""}${manager && p.status === "pending" ? `<form class="review-form" data-id="${p.id}"><label>Approved hashtags<input name="hashtags" value="${esc(p.content.hashtags.join(", "))}"></label><label>Review note (required for rejection)<textarea name="reason" maxlength="4000"></textarea></label><div class="row"><button name="decision" value="accept">Accept & publish</button><button name="decision" value="reject" class="danger">Reject proposal</button></div></form>` : ""}</article>`).join("") || '<div class="empty"><h2>No proposals yet</h2><p>New submissions will appear here.</p></div>'}</section>`;
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">${manager ? "MANAGER WORKSPACE" : "CONTRIBUTOR WORKSPACE"}</p><h1>${manager ? "Review the next revision." : "Your contributions."}</h1><p>${manager ? "Review changes in the calendar and check the highlighted fields before publishing." : "Follow your submissions and read manager feedback."}</p></div><a class="button" href="/contribute">+ New calendar</a></div><div class="tools"><span class="pill pending">${rows.filter((p) => p.status === "pending").length} pending</span><span class="pill accepted">${rows.filter((p) => p.status === "accepted").length} accepted</span><span class="pill rejected">${rows.filter((p) => p.status === "rejected").length} rejected</span></div><section>${rows.map((p, i) => `<article class="panel review"><div class="row between"><h2>${esc(p.content.title)}</h2><span class="pill ${p.status}">${esc(p.status)}</span></div><p class="meta">${esc(p.username)} · ${esc(CalendarUI.dateText(p.created_at.slice(0, 10)))} · ${p.target ? "Update to revision " + p.base_revision : "New calendar"}</p>${p.message ? `<p>${esc(p.message)}</p>` : ""}<div class="tags">${tags(p.content.hashtags)}</div><p class="meta">${p.changes.unchanged?.length || 0} unchanged · +${p.changes.added.length} added · ${p.changes.edited.length} edited · −${p.changes.deleted.length} deleted</p><details class="review-calendar-toggle" data-id="${p.id}" ${i === 0 ? "open" : ""}><summary>Calendar preview</summary><div class="review-calendar"></div></details><details class="review-diff"><summary>Compare all entries and fields</summary>${diffView(p.changes)}</details>${p.reason ? `<p><strong>Manager feedback:</strong> ${esc(p.reason)}</p>` : ""}${manager && p.status === "pending" ? `<form class="review-form" data-id="${p.id}"><label>Approved hashtags<input name="hashtags" value="${esc(p.content.hashtags.join(", "))}"></label><label>Review note (required for rejection)<textarea name="reason" maxlength="4000"></textarea></label><div class="row"><button name="decision" value="accept">Accept & publish</button><button name="decision" value="reject" class="danger">Reject proposal</button></div></form>` : ""}</article>`).join("") || '<div class="empty"><h2>No proposals yet</h2><p>New submissions will appear here.</p></div>'}</section>`;
+  document.querySelectorAll(".review-calendar-toggle").forEach((toggle) => {
+    let loaded = false;
+    const load = () => {
+      if (!toggle.open || loaded) return;
+      loaded = true;
+      const p = rows.find((p) => p.id === toggle.dataset.id);
+      const statuses = new Map([
+        ...p.changes.added.map((e) => [CalendarUI.key(e), "added"]),
+        ...p.changes.edited.map((x) => [CalendarUI.key(x.after), "edited"]),
+      ]);
+      CalendarUI.monthPreview(toggle.querySelector(".review-calendar"), {
+        review: true,
+        initial:
+          p.content.events[0]?.start ||
+          p.content.events[0]?.end ||
+          p.changes.deleted[0]?.start ||
+          p.changes.deleted[0]?.end,
+        load: async (start, end) => {
+          const current = await api("/api/preview", {
+            method: "POST",
+            body: { content: p.content, start, end },
+          });
+          current.events = current.events.map((e) => ({
+            ...e,
+            change: statuses.get(e.key) || "unchanged",
+          }));
+          if (p.changes.deleted.length) {
+            const old = await api("/api/preview", {
+              method: "POST",
+              body: {
+                content: { ...p.before, events: p.changes.deleted },
+                start,
+                end,
+              },
+            });
+            current.events.push(
+              ...old.events.map((e) => ({ ...e, change: "deleted" })),
+            );
+            current.warnings.push(...old.warnings);
+          }
+          return current;
+        },
+      });
+    };
+    toggle.addEventListener("toggle", load);
+    load();
+  });
   document.querySelectorAll(".review-form").forEach(
     (form) =>
       (form.onsubmit = safe(async (e) => {
@@ -352,6 +783,7 @@ async function dashboard(manager = false) {
       })),
   );
 }
+
 async function route() {
   const path = location.pathname;
   document

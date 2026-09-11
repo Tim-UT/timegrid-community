@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 import hashlib, json, os, re, secrets, sqlite3, time, uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from functools import wraps
 from pathlib import Path
 import click
 from flask import Flask, abort, g, jsonify, render_template, request, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
-from icalendar import Calendar, Event, Timezone
+from icalendar import Calendar, Event, Todo, Timezone, vRecur
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from calendar_domain import entry_type, semantic, component, preview
 
 ROOT = Path(__file__).parent
 
@@ -53,18 +55,32 @@ def decode_ics(raw):
         if cal.name != "VCALENDAR":
             raise ValueError()
         events = []
-        for ev in cal.walk("VEVENT"):
-            if not ev.get("DTSTART"):
-                raise ValueError("An event has no start date")
-            start = ev.decoded("DTSTART")
-            end = ev.decoded("DTEND", None)
-            if end is None and ev.get("DURATION"):
+        for ev in (c for c in cal.subcomponents if c.name in ("VEVENT", "VTODO")):
+            kind = (
+                "deadline"
+                if ev.name == "VTODO"
+                else "event" if ev.get("DTEND") or ev.get("DURATION") else "notice"
+            )
+            start = ev.decoded("DTSTART", None) if kind != "deadline" else None
+            end = (
+                ev.decoded("DUE", None)
+                if kind == "deadline"
+                else ev.decoded("DTEND", None)
+            )
+            if end is None and start is not None and ev.get("DURATION"):
                 end = start + ev.decoded("DURATION")
+            if not start and not end:
+                raise ValueError("Missing date")
+            date_prop = ev.get("DUE") if kind == "deadline" else ev.get("DTSTART")
             events.append(
                 {
                     "uid": str(ev.get("UID") or identifier() + "@timegrid"),
                     "title": str(ev.get("SUMMARY", "Untitled event")),
-                    "start": start.isoformat(),
+                    "type": kind,
+                    "timezone": (
+                        str(date_prop.params.get("TZID", "")) if date_prop else ""
+                    ),
+                    "start": start.isoformat() if start else "",
                     "end": end.isoformat() if end else "",
                     "description": str(ev.get("DESCRIPTION", "")),
                     "location": str(ev.get("LOCATION", "")),
@@ -115,9 +131,50 @@ def clean_content(value):
         title_ev = str(item.get("title", "")).strip()
         if not title_ev or len(title_ev) > 300:
             problem("Each event needs a title of at most 300 characters.")
-        start = parse_date(item.get("start"))
+        kind = entry_type(item)
+        if kind not in ("event", "deadline", "notice"):
+            problem("Choose event, deadline, or notice.")
+        if kind == "event" and (not item.get("start") or not item.get("end")):
+            problem("An event needs both a start and an end.")
+        if kind == "deadline" and (item.get("start") or not item.get("end")):
+            problem("A deadline needs only a due date.")
+        if kind == "notice" and (not item.get("start") or item.get("end")):
+            problem("A notice needs only a start date.")
+        start = parse_date(item["start"]) if item.get("start") else None
         end = parse_date(item["end"]) if item.get("end") else None
-        if end is not None:
+        zone = str(item.get("timezone", ""))
+        if zone:
+            try:
+                fixed = re.fullmatch(r"UTC([+-])(\d{2}):(\d{2})", zone)
+                if fixed:
+                    minutes = int(fixed[2]) * 60 + int(fixed[3])
+                    if int(fixed[3]) > 59 or minutes >= 24 * 60:
+                        raise ValueError()
+                    tz = timezone(
+                        timedelta(minutes=minutes * (1 if fixed[1] == "+" else -1))
+                    )
+                else:
+                    tz = ZoneInfo(zone)
+            except (ZoneInfoNotFoundError, ValueError):
+                try:
+                    original = component(
+                        item.get("raw", ""), value.get("timezones", [])
+                    )
+                    prop = original.get("DUE") or original.get("DTSTART")
+                    if str(prop.params.get("TZID", "")) != zone:
+                        raise ValueError()
+                    tz = prop.dt.tzinfo
+                    if tz is None:
+                        raise ValueError()
+                except Exception:
+                    problem("Choose a valid time zone.")
+            if isinstance(start, datetime):
+                start = (
+                    start.astimezone(tz) if start.tzinfo else start.replace(tzinfo=tz)
+                )
+            if isinstance(end, datetime):
+                end = end.astimezone(tz) if end.tzinfo else end.replace(tzinfo=tz)
+        if start is not None and end is not None:
             try:
                 if type(start) != type(end) or end <= start:
                     problem(
@@ -126,24 +183,22 @@ def clean_content(value):
             except TypeError:
                 problem("Start and end must use matching timezone formats.")
         try:
-            if item.get("raw"):
-                wrapper = (
-                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
-                    + "\r\n".join(value.get("timezones", []))
-                    + "\r\n"
-                    + item["raw"]
-                    + "\r\nEND:VCALENDAR\r\n"
-                )
-                parsed = Calendar.from_ical(wrapper).walk("VEVENT")
-                if len(parsed) != 1:
-                    raise ValueError()
-                ev = parsed[0]
-            else:
-                ev = Event()
+            ev = (
+                component(item["raw"], value.get("timezones", []))
+                if item.get("raw")
+                else (Todo() if kind == "deadline" else Event())
+            )
         except Exception:
             problem("Invalid preserved event data.")
-        if ev.name != "VEVENT":
-            problem("Invalid event component.")
+        if (ev.name == "VTODO") != (kind == "deadline"):
+            converted = Todo() if kind == "deadline" else Event()
+            for field, val in ev.items():
+                if field not in ("DTSTART", "DTEND", "DUE", "DURATION"):
+                    converted[field] = val
+            ev = converted
+        ev.pop("DUE" if kind != "deadline" else "DTEND", None)
+        if kind == "deadline":
+            ev.pop("DTSTART", None)
         for field, val in [
             ("UID", uid),
             ("SUMMARY", title_ev),
@@ -152,7 +207,11 @@ def clean_content(value):
         ]:
             ev.pop(field, None)
             ev.add(field, val)
-        for field, val in [("DTSTART", start), ("DTEND", end)]:
+        for field, val in (
+            [("DUE", end)]
+            if kind == "deadline"
+            else [("DTSTART", start), ("DTEND", end)]
+        ):
             previous = ev.get(field)
             # Preserve named zones and custom VTIMEZONE definitions when a date is unchanged.
             unchanged = previous is not None and previous.dt.isoformat() == (
@@ -161,9 +220,57 @@ def clean_content(value):
             if not unchanged:
                 ev.pop(field, None)
                 if val is not None:
-                    ev.add(field, val)
-        if end is not None:
-            ev.pop("DURATION", None)
+                    encoded = val
+                    if (
+                        isinstance(val, datetime)
+                        and val.tzinfo
+                        and not getattr(val.tzinfo, "key", None)
+                        and (not zone or zone.startswith("UTC"))
+                    ):
+                        encoded = val.astimezone(timezone.utc)
+                    ev.add(field, encoded)
+        ev.pop("DURATION", None)
+        if "recurrence" in item:
+            rule = str(item["recurrence"]).strip()
+            if len(rule) > 1000:
+                problem("Repeat settings are too long.")
+            previous = ev.get("RRULE").to_ical().decode() if ev.get("RRULE") else ""
+            if rule != previous:
+                ev.pop("RRULE", None)
+                if rule:
+                    try:
+                        parsed = vRecur.from_ical(rule)
+                        if len(parsed.get("FREQ", [])) != 1 or parsed["FREQ"][
+                            0
+                        ] not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+                            raise ValueError()
+                        if any(
+                            int(parsed.get(k, [1])[0]) < 1
+                            for k in ("INTERVAL", "COUNT")
+                        ):
+                            raise ValueError()
+                        if parsed.get("COUNT") and parsed.get("UNTIL"):
+                            raise ValueError()
+                        ev.add("rrule", parsed)
+                        from dateutil.rrule import rrulestr
+
+                        check = (
+                            parsed.to_ical().decode()
+                            if hasattr(parsed, "to_ical")
+                            else ev["RRULE"].to_ical().decode()
+                        )
+                        anchor = start or end
+                        if not isinstance(anchor, datetime):
+                            anchor = datetime.combine(anchor, datetime.min.time())
+                        # Validate rule syntax independently of legacy UNTIL timezone conventions.
+                        check = re.sub(r";?UNTIL=[^;]+", "", check)
+                        rrulestr(check, dtstart=anchor)
+                    except Exception:
+                        problem("Invalid repeat settings.")
+                if not rule:
+                    ev.pop("EXDATE", None)
+                    ev.pop("RDATE", None)
+
         # Calendar subscriptions must never execute alarms supplied by a contributor.
         ev.subcomponents = []
         if not ev.get("DTSTAMP"):
@@ -172,7 +279,10 @@ def clean_content(value):
         result = {
             "uid": uid,
             "title": title_ev,
-            "start": start.isoformat(),
+            "type": kind,
+            "timezone": zone
+            or str((ev.get("DUE") or ev.get("DTSTART")).params.get("TZID", "")),
+            "start": start.isoformat() if start else "",
             "end": end.isoformat() if end else "",
             "description": str(ev.get("DESCRIPTION", "")),
             "location": str(ev.get("LOCATION", "")),
@@ -231,7 +341,7 @@ def export_ics(content, revision):
     for raw in content["timezones"]:
         cal.add_component(Timezone.from_ical(raw))
     for item in content["events"]:
-        ev = Event.from_ical(item["raw"])
+        ev = component(item["raw"], content["timezones"])
         ev.pop("SEQUENCE", None)
         ev.add("sequence", revision)
         cal.add_component(ev)
@@ -241,18 +351,33 @@ def export_ics(content, revision):
 def changes(before, after):
     old = {event_key(e): e for e in before.get("events", [])}
     new = {event_key(e): e for e in after["events"]}
+    common = old.keys() & new.keys()
     return {
-        "added": [new[k] for k in new.keys() - old.keys()],
-        "deleted": [old[k] for k in old.keys() - new.keys()],
+        "added": [new[k] for k in new if k not in old],
+        "deleted": [old[k] for k in old if k not in new],
+        "unchanged": [
+            new[k] for k in new if k in common and semantic(old[k]) == semantic(new[k])
+        ],
         "edited": [
-            {"before": old[k], "after": new[k]}
-            for k in old.keys() & new.keys()
-            if old[k] != new[k]
+            {
+                "before": old[k],
+                "after": new[k],
+                "fields": [
+                    f
+                    for f in semantic(new[k])
+                    if semantic(old[k]).get(f) != semantic(new[k]).get(f)
+                ],
+            }
+            for k in new
+            if k in common and semantic(old[k]) != semantic(new[k])
         ],
         "metadata": {
-            k: {"before": before.get(k), "after": after[k]}
+            k: {
+                "before": before.get(k, [] if k in ("hashtags", "sources") else ""),
+                "after": after[k],
+            }
             for k in ("title", "description", "hashtags", "sources")
-            if before.get(k) != after[k]
+            if before.get(k, [] if k in ("hashtags", "sources") else "") != after[k]
         },
     }
 
@@ -539,6 +664,21 @@ def create_app(test_config=None):
         result.set_etag(hashlib.sha256(result.data).hexdigest())
         return result.make_conditional(request)
 
+    @app.post("/api/preview")
+    @require()
+    def calendar_preview():
+        b = body()
+        content = b.get("content")
+        if not isinstance(content, dict):
+            problem("Calendar content is required.")
+        content = dict(content)
+        content["title"] = content.get("title") or "Calendar preview"
+        cleaned = clean_content(content)
+        try:
+            return preview(cleaned, b.get("start", ""), b.get("end", ""))
+        except (ValueError, TypeError):
+            problem("Choose a valid calendar date range of up to six weeks.")
+
     @app.post("/api/import")
     @require()
     def import_calendar():
@@ -624,8 +764,8 @@ def create_app(test_config=None):
             ):
                 problem("Unknown source revision.")
         message = str(b.get("message", "")).strip()
-        if not message or len(message) > 4000:
-            problem("Explain your changes in 1–4,000 characters.")
+        if len(message) > 4000:
+            problem("Use at most 4,000 characters.")
         pid = identifier()
         db().execute(
             "INSERT INTO proposals(id,author,target,base_revision,content,message,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -650,6 +790,7 @@ def create_app(test_config=None):
             if revision:
                 old = json.loads(revision["content"])
         p["changes"] = changes(old, p["content"])
+        p["before"] = old
         return p
 
     @app.get("/api/proposals")
