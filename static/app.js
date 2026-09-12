@@ -211,7 +211,7 @@ async function editor() {
           `<option value="${esc(c.id)}">${esc(c.title)} · revision ${c.revision}</option>`,
       )
       .join("");
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">CALENDAR EDITOR</p><h1 id="editor-heading"></h1><p id="mode-help"></p></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-mode="create">Create mode</button><button type="button" data-mode="proposal">Proposal mode</button></div></div><div class="proposal-source panel" id="proposal-source"><label>Calendar to update<select id="target-calendar">${options}</select></label><button type="button" class="quiet" id="load-target">Load calendar to edit</button><p class="hint" id="target-status"></p></div><div class="editor-layout"><form id="editor" class="panel editor-form"><label>Calendar title<input name="title" required maxlength="160"></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Entries <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add entry</button></div><details class="import-tools"><summary>Import entries</summary><div class="import-switch" role="group" aria-label="Import source"><button type="button" class="quiet" data-import="device" aria-pressed="true">Upload from device</button><button type="button" class="quiet" data-import="site" aria-pressed="false">Pull from this site</button></div><div id="device-import"><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></div><div id="site-import" hidden><label>Published calendar<select id="source-calendar">${options}</select></label><button type="button" class="quiet" id="pull-calendar">Add its entries</button></div><p class="hint">Imported entries are added to this draft. Your existing entries stay in place.</p></details><div id="events"></div><div class="submit-bar"><button type="submit" id="submit-draft"></button><p class="hint">A manager reviews the calendar before it is published.</p></div></form><section class="panel editor-preview" id="editor-preview" aria-label="Draft calendar preview"></section></div>`;
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">CALENDAR EDITOR</p><h1 id="editor-heading"></h1><p id="mode-help"></p></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-mode="create">Create mode</button><button type="button" data-mode="proposal">Proposal mode</button></div></div><div class="proposal-source panel" id="proposal-source"><label>Calendar to update<select id="target-calendar">${options}</select></label><button type="button" class="quiet" id="load-target">Load calendar to edit</button><p class="hint" id="target-status"></p></div><div class="editor-layout"><form id="editor" class="panel editor-form"><label>Calendar title<input name="title" required maxlength="160"></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Entries <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add entry</button></div><details class="import-tools"><summary>Import entries</summary><div class="import-switch" role="group" aria-label="Import source"><button type="button" class="quiet" data-import="device" aria-pressed="true">Upload from device</button><button type="button" class="quiet" data-import="site" aria-pressed="false">From this site</button><button type="button" class="quiet" data-import="link" aria-pressed="false">Subscription link</button></div><div id="device-import"><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></div><div id="site-import" hidden><p class="hint">Browse published calendars and select one or more sources.</p><button type="button" class="quiet" id="browse-sources">Browse calendars</button></div><div id="link-import" hidden><label>Calendar subscription URL<input id="subscription-url" type="url" placeholder="https://… or webcal://…"></label><button type="button" class="quiet" id="import-link">Import from link</button><p class="hint">Use the provider’s Subscribe or iCal link, such as a sports schedule. This imports its current entries; published updates still go through review.</p></div><p class="hint">Imported entries are added to this draft. Your existing entries stay in place.</p></details><div id="events"></div><div class="submit-bar"><button type="submit" id="submit-draft"></button><p class="hint">A manager reviews the calendar before it is published.</p></div></form><section class="panel editor-preview" id="editor-preview" aria-label="Draft calendar preview"></section></div><dialog id="source-picker" class="source-picker"><div class="row between"><h2>Explore calendar sources</h2><button type="button" class="quiet" id="close-sources" aria-label="Close source browser">×</button></div><label>Search calendars<input id="source-search" type="search" placeholder="Search titles, descriptions, or hashtags"></label><div class="source-picker-tools"><label class="check"><input type="checkbox" id="select-visible-sources">Select search results</label><span id="source-selection-count" class="meta" role="status">0 selected</span></div><div id="source-results" class="source-results"></div><div class="source-picker-footer"><p id="source-error" role="alert"></p><button type="button" id="import-selected-sources" disabled>Add selected calendars</button></div></dialog>`;
   const form = $("#editor");
   function metadata() {
     form.elements.title.value = draft.title;
@@ -225,12 +225,24 @@ async function editor() {
       box.querySelectorAll("[data-field]").forEach((input) => {
         const field = input.dataset.field;
         let val = input.value;
-        if ((field === "start" || field === "end") && val) {
-          const old = e[field] || "";
-          if ((allDay ? old.slice(0, 10) : old.slice(0, 16)) === val) val = old;
-        }
         e[field] = val;
       });
+      for (const field of ["start", "end"]) {
+        const date = box.querySelector(`[data-date-for="${field}"]`),
+          time = box.querySelector(`[data-time-for="${field}"]`);
+        const old = e[field] || "";
+        let value = date.disabled ? "" : date.value;
+        if (value && !allDay)
+          value = time.value ? value + "T" + time.value : "";
+        if (
+          value &&
+          (allDay
+            ? old.length === 10 && old === value
+            : old.slice(0, 16) === value)
+        )
+          value = old;
+        e[field] = value;
+      }
       e.type = box.querySelector("[data-kind]").value;
       if (e.type === "deadline") e.start = "";
       if (e.type === "notice") e.end = "";
@@ -244,7 +256,7 @@ async function editor() {
             const days = [
               ...box.querySelectorAll("[data-weekday]:checked"),
             ].map((x) => x.value);
-            if (days.length) r += ";BYDAY=" + days.join(",");
+            if (days.length) r += ";BYDAY=" + days.join(",") + ";WKST=MO";
           }
           const ending = box.querySelector("[data-ending]").value;
           if (ending === "count")
@@ -328,7 +340,17 @@ async function editor() {
         .map((e, i) => {
           const allDay = (e.start || e.end || "").length === 10,
             t = e.type;
-          return `<details class="event-editor" data-index="${i}"><summary><span class="entry-title">${esc(e.title || "Untitled entry")}</span><span class="meta entry-summary">${esc(UI.timing(e))}</span></summary><label>Entry type<select data-kind>${["event", "deadline", "notice"].map((k) => `<option value="${k}" ${t === k ? "selected" : ""}>${k === "event" ? "Event — start and end" : k === "deadline" ? "Deadline — due date only" : "Notice — start only"}</option>`).join("")}</select></label><label>Title<input data-field="title" value="${esc(e.title)}" maxlength="300" required></label><label class="check"><input type="checkbox" data-all-day ${allDay ? "checked" : ""}>All day</label><div class="event-grid"><label data-start-label ${t === "deadline" ? "hidden" : ""}>Start<input data-field="start" type="${allDay ? "date" : "datetime-local"}" value="${esc((e.start || "").slice(0, allDay ? 10 : 16))}" ${t === "deadline" ? "disabled" : "required"}></label><label data-end-label ${t === "notice" ? "hidden" : ""}>${t === "deadline" ? "Due" : "End"}<input data-field="end" type="${allDay ? "date" : "datetime-local"}" value="${esc((e.end || "").slice(0, allDay ? 10 : 16))}" ${t === "notice" ? "disabled" : "required"}></label></div><p class="hint date-help">${allDay && t === "event" ? "All-day end dates are exclusive: a one-day event ends on the following date." : t === "deadline" ? "This entry appears at its due date." : t === "notice" ? "This entry appears at its start." : "Set the start and end of this event."}</p><label class="zone-label" ${allDay ? "hidden" : ""}>Time zone<input data-field="timezone" value="${esc(e.timezone || "")}" placeholder="America/Toronto"></label><label>Location<input data-field="location" value="${esc(e.location)}"></label><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label><fieldset class="repeat-settings"><legend>Repeat</legend><p class="hint repeat-summary">${esc(UI.recurrenceText(e.recurrence, e.start || e.end))}</p><label>Repeats<select data-repeat>${e.recurrence ? '<option value="keep">Keep existing schedule</option>' : ""}<option value="none">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label><div class="repeat-options" hidden><label>Repeat every<input data-interval type="number" min="1" max="999" value="1"><span class="hint interval-unit"></span></label><div class="weekdays" hidden>${Object.entries(
+          return `<details class="event-editor" data-index="${i}"><summary><span class="entry-title">${esc(e.title || "Untitled entry")}</span><span class="meta entry-summary">${esc(UI.timing(e))}</span></summary><label>Entry type<select data-kind>${["event", "deadline", "notice"].map((k) => `<option value="${k}" ${t === k ? "selected" : ""}>${k === "event" ? "Event — start and end" : k === "deadline" ? "Deadline — due date only" : "Notice — start only"}</option>`).join("")}</select></label><label>Title<input data-field="title" value="${esc(e.title)}" maxlength="300" required></label><label class="check"><input type="checkbox" data-all-day ${allDay ? "checked" : ""}>All day (no specific time)</label><div class="entry-date-fields">${[
+            ["start", "Start", t === "deadline"],
+            ["end", t === "deadline" ? "Due" : "End", t === "notice"],
+          ]
+            .map(
+              ([field, label, absent]) =>
+                `<div class="date-time-row" data-${field}-label ${absent ? "hidden" : ""}><label>${label} date<input data-date-for="${field}" type="date" value="${esc((e[field] || "").slice(0, 10))}" ${absent ? "disabled" : "required"}></label><label>${label} time<input data-time-for="${field}" type="time" value="${esc((e[field] || "").includes("T") ? e[field].slice(11, 16) : "09:00")}" ${absent || allDay ? "disabled" : "required"}></label></div>`,
+            )
+            .join(
+              "",
+            )}</div><p class="hint date-help">${allDay && t === "event" ? "All-day end dates are exclusive: a one-day event ends on the following date." : t === "deadline" ? "This entry appears at its due date." : t === "notice" ? "This entry appears at its start." : "Set the start and end of this event."}</p><label class="zone-label" ${allDay ? "hidden" : ""}>Time zone<input data-field="timezone" value="${esc(e.timezone || "")}" placeholder="America/Toronto"></label><label>Location<input data-field="location" value="${esc(e.location)}"></label><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label><fieldset class="repeat-settings"><legend>Repeat</legend><p class="hint repeat-summary">${esc(UI.recurrenceText(e.recurrence, e.start || e.end))}</p><label>Repeats<select data-repeat>${e.recurrence ? '<option value="keep">Keep existing schedule</option>' : ""}<option value="none">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label><div class="repeat-options" hidden><label>Repeat every<input data-interval type="number" min="1" max="999" value="1"><span class="hint interval-unit"></span></label><div class="weekday-options" hidden><p class="weekday-caption">Repeat on these days</p><div class="weekdays">${Object.entries(
             {
               MO: "Mon",
               TU: "Tue",
@@ -341,11 +363,11 @@ async function editor() {
           )
             .map(
               ([k, v]) =>
-                `<label class="check"><input type="checkbox" data-weekday value="${k}">${v}</label>`,
+                `<label class="weekday-chip"><input type="checkbox" data-weekday value="${k}" aria-label="${{ MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday", SU: "Sunday" }[k]}"><span>${v}</span></label>`,
             )
             .join(
               "",
-            )}</div><label>Ends<select data-ending><option value="never">Never</option><option value="until">On a date</option><option value="count">After a number of occurrences</option></select></label><label class="until-label" hidden>Last date<input type="date" data-until disabled></label><label class="count-label" hidden>Occurrences<input type="number" data-count min="1" max="10000" value="10" disabled></label></div></fieldset><button type="button" class="danger delete-event">Delete entry</button></details>`;
+            )}</div><p class="hint">Choose one or more days. Weeks start on Monday; each occurrence uses the time above.</p></div><label>Ends<select data-ending><option value="never">Never</option><option value="until">On a date</option><option value="count">After a number of occurrences</option></select></label><label class="until-label" hidden>Last date<input type="date" data-until disabled></label><label class="count-label" hidden>Occurrences<input type="number" data-count min="1" max="10000" value="10" disabled></label></div></fieldset><button type="button" class="danger delete-event">Delete entry</button></details>`;
         })
         .join("") ||
       '<p class="hint">Add an entry or import a calendar to get started.</p>';
@@ -385,11 +407,30 @@ async function editor() {
       box.querySelector("[data-all-day]").onchange = () => {
         const checked = box.querySelector("[data-all-day]").checked;
         const e = draft.events[index];
+        const previous = { start: e.start, end: e.end };
         sync();
         for (const k of ["start", "end"])
           if (e[k])
-            e[k] = checked ? e[k].slice(0, 10) : e[k].slice(0, 10) + "T09:00";
+            e[k] = checked
+              ? e[k].slice(0, 10)
+              : e[k].slice(0, 10) + "T" + (e._savedTimes?.[k] || "09:00");
+        if (
+          !checked &&
+          e._savedEndDate &&
+          previous.end === e._savedEndDate &&
+          e._originalEndDate
+        )
+          e.end = e._originalEndDate + "T" + (e._savedTimes?.end || "10:00");
+        if (checked)
+          e._savedTimes = {
+            start: (previous.start || "").slice(11, 16),
+            end: (previous.end || "").slice(11, 16),
+          };
         if (e.type === "event" && e.start === e.end) e.end = nextEnd(e.start);
+        if (checked) {
+          e._originalEndDate = (previous.end || "").slice(0, 10);
+          e._savedEndDate = e.end;
+        }
         renderEntries();
         document.querySelector(`.event-editor[data-index="${index}"]`).open =
           true;
@@ -400,7 +441,16 @@ async function editor() {
         const freq = box.querySelector("[data-repeat]").value,
           active = !["keep", "none"].includes(freq);
         box.querySelector(".repeat-options").hidden = !active;
-        box.querySelector(".weekdays").hidden = freq !== "WEEKLY";
+        box.querySelector(".weekday-options").hidden = freq !== "WEEKLY";
+        if (freq === "WEEKLY" && !box.querySelector("[data-weekday]:checked")) {
+          const anchor = draft.events[index].start || draft.events[index].end;
+          const weekday =
+            ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][
+              new Date(anchor.slice(0, 10) + "T12:00:00").getDay()
+            ] || "MO";
+          box.querySelector(`[data-weekday][value="${weekday}"]`).checked =
+            true;
+        }
         box.querySelector(".interval-unit").textContent =
           {
             DAILY: "day(s)",
@@ -427,6 +477,18 @@ async function editor() {
         dirty = true;
         schedule();
       };
+      box.querySelectorAll("[data-weekday]").forEach(
+        (input) =>
+          (input.onchange = () => {
+            if (!box.querySelector("[data-weekday]:checked")) {
+              input.checked = true;
+              notify("Keep at least one weekday selected.");
+            }
+            sync();
+            dirty = true;
+            schedule();
+          }),
+      );
       box.querySelector("[data-ending]").onchange = () => {
         repeatUI();
         dirty = true;
@@ -447,7 +509,8 @@ async function editor() {
   }
   $("#add-event").onclick = () => {
     sync();
-    const start = new Date().toISOString().slice(0, 10);
+    const today = new Date();
+    const start = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}T09:00`;
     draft.events.push({
       uid: crypto.randomUUID() + "@timegrid",
       title: "New event",
@@ -512,13 +575,16 @@ async function editor() {
     combined.timezones = [...zones.values()];
     if (!combined.title) combined.title = imported.title;
     if (!combined.description) combined.description = imported.description;
-    if (
-      source &&
-      !combined.sources.some(
-        (s) => s.id === source.id && s.revision === source.revision,
+    for (const ref of [
+      ...(imported.sources || []),
+      ...(source ? [source] : []),
+    ])
+      if (
+        !combined.sources.some(
+          (s) => s.id === ref.id && s.revision === ref.revision,
+        )
       )
-    )
-      combined.sources.push(source);
+        combined.sources.push(ref);
     combined.hashtags = [
       ...new Set([...combined.hashtags, ...imported.hashtags]),
     ].slice(0, 12);
@@ -537,6 +603,7 @@ async function editor() {
           .forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
         $("#device-import").hidden = b.dataset.import !== "device";
         $("#site-import").hidden = b.dataset.import !== "site";
+        $("#link-import").hidden = b.dataset.import !== "link";
       }),
   );
   $("#upload").onchange = safe(async (e) => {
@@ -549,14 +616,100 @@ async function editor() {
     mergeImported(await api("/api/import", { method: "POST", body }));
     e.target.value = "";
   });
-  $("#pull-calendar").onclick = safe(async () => {
-    const id = $("#source-calendar").value;
-    if (!id) throw Error("Choose a calendar to pull.");
-    const c = await api("/api/calendars/" + encodeURIComponent(id));
-    mergeImported(c.content, { id: c.id, revision: c.revision });
+  const chosen = new Set();
+  let shown = [];
+  function sourceResults() {
+    const query = $("#source-search").value.trim().toLowerCase();
+    shown = catalog.filter((c) =>
+      (c.title + " " + c.description + " " + c.hashtags.join(" "))
+        .toLowerCase()
+        .includes(query),
+    );
+    $("#source-results").innerHTML = shown.length
+      ? shown
+          .map(
+            (c) =>
+              `<label class="source-choice"><input type="checkbox" data-source-id="${esc(c.id)}" ${chosen.has(c.id) ? "checked" : ""}><span><strong>${esc(c.title)}</strong><span class="source-description">${esc(c.description || "Public calendar")}</span><span class="tags">${tags(c.hashtags)}</span><span class="meta">${c.event_count} entries · revision ${c.revision}</span></span></label>`,
+          )
+          .join("")
+      : '<p class="hint">No matching calendars. Try another title or hashtag.</p>';
+    $("#source-selection-count").textContent = `${chosen.size} selected`;
+    $("#import-selected-sources").disabled = !chosen.size;
+    $("#select-visible-sources").checked =
+      shown.length > 0 && shown.every((c) => chosen.has(c.id));
+    $("#select-visible-sources").indeterminate =
+      shown.some((c) => chosen.has(c.id)) &&
+      !$("#select-visible-sources").checked;
+    document.querySelectorAll("[data-source-id]").forEach(
+      (input) =>
+        (input.onchange = () => {
+          if (input.checked) chosen.add(input.dataset.sourceId);
+          else chosen.delete(input.dataset.sourceId);
+          sourceResults();
+        }),
+    );
+  }
+  $("#browse-sources").onclick = () => {
+    sourceResults();
+    $("#source-error").textContent = "";
+    $("#source-picker").showModal();
+    $("#source-search").focus();
+  };
+  $("#close-sources").onclick = () => $("#source-picker").close();
+  $("#source-search").oninput = sourceResults;
+  $("#select-visible-sources").onchange = (e) => {
+    shown.forEach((c) =>
+      e.target.checked ? chosen.add(c.id) : chosen.delete(c.id),
+    );
+    sourceResults();
+  };
+  $("#import-selected-sources").onclick = async () => {
+    const button = $("#import-selected-sources");
+    button.disabled = true;
+    $("#source-error").textContent = "";
+    try {
+      if (chosen.size > 20) throw Error("Select up to 20 calendars at a time.");
+      let imported;
+      if (chosen.size === 1) {
+        const c = await api(
+          "/api/calendars/" + encodeURIComponent([...chosen][0]),
+        );
+        imported = {
+          ...c.content,
+          sources: [{ id: c.id, revision: c.revision }],
+        };
+      } else
+        imported = await api("/api/combine", {
+          method: "POST",
+          body: { ids: [...chosen] },
+        });
+      mergeImported(imported);
+      chosen.clear();
+      $("#source-picker").close();
+    } catch (e) {
+      $("#source-error").textContent = e.message;
+    } finally {
+      button.disabled = !chosen.size;
+    }
+  };
+  $("#import-link").onclick = safe(async () => {
+    const url = $("#subscription-url").value.trim();
+    if (!url) throw Error("Paste a calendar subscription link.");
+    const button = $("#import-link");
+    button.disabled = true;
+    button.textContent = "Importing…";
+    try {
+      mergeImported(
+        await api("/api/import-url", { method: "POST", body: { url } }),
+      );
+      $("#subscription-url").value = "";
+    } finally {
+      button.disabled = false;
+      button.textContent = "Import from link";
+    }
   });
   form.addEventListener("input", (event) => {
-    if (event.target.matches("[data-kind]")) return;
+    if (event.target.matches("[data-kind], [data-all-day]")) return;
     dirty = true;
     sync();
     schedule();

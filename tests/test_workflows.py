@@ -422,3 +422,26 @@ def test_retimed_named_zone_entry_remains_in_preview(setup):
     assert r.status_code == 200, r.json
     assert len(r.json["events"]) == 1 and not r.json["warnings"], r.json
     assert r.json["events"][0]["start"] == "2026-09-15T09:30:00-04:00"
+
+
+def test_subscription_url_import_is_authenticated_and_not_persisted(setup, monkeypatch):
+    raw = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:away-game\r\nDTSTART:20260920T190000Z\r\nDTEND:20260920T210000Z\r\nSUMMARY:Away game\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    called = []
+    monkeypatch.setattr("app.fetch_calendar", lambda url: (called.append(url) or raw))
+    anon = client(setup)
+    assert (
+        post(
+            anon, "/api/import-url", {"url": "https://calendar.example.org/sports.ics"}
+        ).status_code
+        == 401
+    )
+    assert not called
+    a = client(setup, "author")
+    r = post(
+        a,
+        "/api/import-url",
+        {"url": "https://calendar.example.org/sports.ics?token=private"},
+    )
+    assert r.status_code == 200, r.json
+    assert r.json["events"][0]["title"] == "Away game"
+    assert "token=private" not in str(r.json)

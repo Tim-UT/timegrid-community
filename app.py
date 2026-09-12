@@ -12,6 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from icalendar import Calendar, Event, Todo, Timezone, vRecur
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from calendar_domain import entry_type, semantic, component, preview
+from subscription_import import fetch_calendar
 
 ROOT = Path(__file__).parent
 
@@ -686,6 +687,17 @@ def create_app(test_config=None):
         if "file" not in request.files:
             problem("Choose an ICS file.")
         return clean_content(decode_ics(request.files["file"].read()))
+
+    @app.post("/api/import-url")
+    @require()
+    def import_subscription():
+        limit("import-url", 20)
+        try:
+            raw = fetch_calendar(body().get("url"))
+        except ValueError as exc:
+            problem(str(exc))
+        # Private feed tokens are never saved in public calendar metadata.
+        return clean_content(decode_ics(raw))
 
     @app.post("/api/combine")
     @require()
