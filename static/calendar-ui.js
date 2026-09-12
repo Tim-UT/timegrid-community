@@ -235,7 +235,24 @@
       },
     };
   }
+  function correctRange(previous, values, changed) {
+    const stamp = (v) =>
+      Date.parse(v?.slice(0, 16) + (v?.length === 10 ? "T00:00:00Z" : "Z"));
+    const start = stamp(values.start),
+      end = stamp(values.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end > start)
+      return values;
+    const allDay = values.start.length === 10;
+    const oldGap = stamp(previous.end) - stamp(previous.start);
+    const gap = oldGap > 0 ? oldGap : allDay ? 86400000 : 3600000;
+    const other = changed === "start" ? "end" : "start";
+    const corrected = new Date(changed === "start" ? start + gap : end - gap)
+      .toISOString()
+      .slice(0, allDay ? 10 : 16);
+    return { ...values, [other]: corrected };
+  }
   const api = {
+    correctRange,
     html,
     kind,
     key,

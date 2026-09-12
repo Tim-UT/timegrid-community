@@ -460,3 +460,79 @@ def test_public_event_search_and_preview(setup):
     assert r.status_code == 200
     assert "Orientation" in r.get_data(as_text=True)
     assert c.get(f"/api/calendars/{slug}/preview?start=bad&end=bad").status_code == 400
+
+
+def test_parallel_proposals_merge_and_revision_guard(setup):
+    a, m, slug = publish(setup)
+    original = a.get("/api/calendars/" + slug).json
+    first = copy.deepcopy(original["content"])
+    second = copy.deepcopy(first)
+    first["events"][0]["title"] = "Changed by first"
+    second["events"].append(
+        {**second["events"][0], "uid": "second", "title": "Added by second"}
+    )
+    p1 = propose(a, first, original["id"], 1)
+    p2 = propose(a, second, original["id"], 1)
+    assert (
+        post(m, f"/api/proposals/{p1}/review", {"decision": "accept"}).status_code
+        == 200
+    )
+    preview = post(m, f"/api/proposals/{p2}/resolve", {"strategy": "merge"})
+    assert preview.status_code == 200 and not preview.json["conflicts"]
+    assert {e["title"] for e in preview.json["content"]["events"]} == {
+        "Changed by first",
+        "Added by second",
+    }
+    assert (
+        post(a, f"/api/proposals/{p2}/resolve", {"strategy": "merge"}).status_code
+        == 403
+    )
+    assert (
+        post(
+            m,
+            f"/api/proposals/{p2}/review",
+            {"decision": "accept", "strategy": "merge", "expected_revision": 1},
+        ).status_code
+        == 409
+    )
+    assert (
+        post(
+            m,
+            f"/api/proposals/{p2}/review",
+            {"decision": "accept", "strategy": "merge", "expected_revision": 2},
+        ).status_code
+        == 200
+    )
+
+
+def test_parallel_conflict_and_overwrite(setup):
+    a, m, slug = publish(setup)
+    original = a.get("/api/calendars/" + slug).json
+    first = copy.deepcopy(original["content"])
+    second = copy.deepcopy(first)
+    first["events"][0]["title"] = "Current"
+    second["events"] = []
+    p1 = propose(a, first, original["id"], 1)
+    p2 = propose(a, second, original["id"], 1)
+    post(m, f"/api/proposals/{p1}/review", {"decision": "accept"})
+    r = post(m, f"/api/proposals/{p2}/resolve", {"strategy": "merge"})
+    assert len(r.json["conflicts"]) == 1
+    assert (
+        post(
+            m,
+            f"/api/proposals/{p2}/review",
+            {"decision": "accept", "strategy": "merge", "expected_revision": 2},
+        ).status_code
+        == 409
+    )
+    r = post(m, f"/api/proposals/{p2}/resolve", {"strategy": "overwrite"})
+    assert not r.json["content"]["events"]
+    assert (
+        post(
+            m,
+            f"/api/proposals/{p2}/review",
+            {"decision": "accept", "strategy": "overwrite", "expected_revision": 2},
+        ).status_code
+        == 200
+    )
+    assert not a.get("/api/calendars/" + slug).json["content"]["events"]

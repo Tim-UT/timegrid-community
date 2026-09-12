@@ -161,11 +161,8 @@ async function explore() {
         searchParams($("#search"), $("#search [name=q]").value),
     );
     $("#results").innerHTML = data.calendars.length
-      ? `<div class="explore-calendars">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><section class="public-preview" data-preview="${esc(c.id)}"></section><div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
+      ? `<div class="explore-calendars">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><ul class="sample-entries">${(c.sample_entries || []).map((e) => `<li><span class="pill">${esc(e.type)}</span> ${esc(e.title)}</li>`).join("")}</ul><div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
       : '<div class="empty"><h2>No matching calendars</h2><p>Try different words or remove an advanced search filter.</p><a href="/contribute">Contribute a calendar →</a></div>';
-    data.calendars.forEach((c) =>
-      publicMonth(document.querySelector(`[data-preview="${c.id}"]`), c),
-    );
   };
   $("#search").onsubmit = safe(async (e) => {
     e.preventDefault();
@@ -381,7 +378,7 @@ async function editor() {
             )
             .join(
               "",
-            )}</div><p class="hint date-help">${allDay && t === "event" ? "All-day end dates are exclusive: a one-day event ends on the following date." : t === "deadline" ? "This entry appears at its due date." : t === "notice" ? "This entry appears at its start." : "Set the start and end of this event."}</p><label class="zone-label" ${allDay ? "hidden" : ""}>Time zone<input data-field="timezone" value="${esc(e.timezone || "")}" placeholder="America/Toronto"></label><label>Location<input data-field="location" value="${esc(e.location)}"></label><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label><fieldset class="repeat-settings"><legend>Repeat</legend><p class="hint repeat-summary">${esc(UI.recurrenceText(e.recurrence, e.start || e.end))}</p><label>Repeats<select data-repeat>${e.recurrence ? '<option value="keep">Keep existing schedule</option>' : ""}<option value="none">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label><div class="repeat-options" hidden><label>Repeat every<input data-interval type="number" min="1" max="999" value="1"><span class="hint interval-unit"></span></label><div class="weekday-options" hidden><p class="weekday-caption">Repeat on these days</p><div class="weekdays">${Object.entries(
+            )}</div><p class="hint date-help">${allDay && t === "event" ? "All-day end dates are exclusive: a one-day event ends on the following date." : t === "deadline" ? "This entry appears at its due date." : t === "notice" ? "This entry appears at its start." : "Set the start and end of this event."}</p><label class="zone-label" ${allDay ? "hidden" : ""}>Time zone<select data-field="timezone">${[...new Set([e.timezone || "", "UTC", ...(Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : ["America/Toronto", "America/New_York", "Europe/London", "Asia/Shanghai"])])].map((z) => `<option value="${esc(z)}" ${z === (e.timezone || "") ? "selected" : ""}>${esc(z || "Floating local time (no timezone)")}</option>`).join("")}</select></label><label>Location<input data-field="location" value="${esc(e.location)}"></label><label>Description<textarea data-field="description">${esc(e.description)}</textarea></label><fieldset class="repeat-settings"><legend>Repeat</legend><p class="hint repeat-summary">${esc(UI.recurrenceText(e.recurrence, e.start || e.end))}</p><label>Repeats<select data-repeat>${e.recurrence ? '<option value="keep">Keep existing schedule</option>' : ""}<option value="none">Does not repeat</option><option value="DAILY">Daily</option><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label><div class="repeat-options" hidden><label>Repeat every<input data-interval type="number" min="1" max="999" value="1"><span class="hint interval-unit"></span></label><div class="weekday-options" hidden><p class="weekday-caption">Repeat on these days</p><div class="weekdays">${Object.entries(
             {
               MO: "Mon",
               TU: "Tue",
@@ -766,6 +763,45 @@ async function editor() {
     }
   });
   form.addEventListener("input", (event) => {
+    const input = event.target,
+      box = input.closest(".event-editor");
+    if (box && (input.dataset.dateFor || input.dataset.timeFor)) {
+      const item = draft.events[Number(box.dataset.index)],
+        allDay = box.querySelector("[data-all-day]").checked;
+      if (item.type === "event") {
+        const values = {};
+        for (const k of ["start", "end"]) {
+          const date = box.querySelector(`[data-date-for="${k}"]`).value;
+          const time = box.querySelector(`[data-time-for="${k}"]`).value;
+          values[k] =
+            date && (allDay || time) ? date + (allDay ? "" : "T" + time) : "";
+        }
+        const fixed = CalendarUI.correctRange(
+          item,
+          values,
+          input.dataset.dateFor || input.dataset.timeFor,
+        );
+        for (const k of ["start", "end"])
+          if (fixed[k] !== values[k]) {
+            box.querySelector(`[data-date-for="${k}"]`).value = fixed[k].slice(
+              0,
+              10,
+            );
+            box.querySelector(`[data-time-for="${k}"]`).value =
+              fixed[k].slice(11, 16) || "09:00";
+            item.start = values.start;
+            item.end = values.end;
+            box.querySelector(".date-help").textContent =
+              "The other endpoint moved to preserve the previous duration.";
+          }
+      }
+    }
+    if (box && input.dataset.field === "timezone") {
+      const item = draft.events[Number(box.dataset.index)];
+      for (const k of ["start", "end"])
+        if (item[k]?.includes("T")) item[k] = item[k].slice(0, 16);
+    }
+
     if (event.target.matches("[data-kind], [data-all-day]")) return;
     dirty = true;
     sync();
@@ -910,13 +946,133 @@ function diffView(d) {
     )
     .join("")}</div>`;
 }
+async function resolveReview(p, manager) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "merge-dialog";
+  dialog.innerHTML = `<div class="row between"><h2>Review parallel changes</h2><button type="button" class="quiet close-merge">Close</button></div><p>This proposal started from revision ${p.base_revision}. Merge preserves independent changes. Conflicting entries require a choice; a deleted entry stays deleted unless you select the version containing it.</p><label>Publication method<select class="merge-strategy"><option value="merge">Merge into the latest calendar</option><option value="overwrite">Overwrite with this proposal</option></select></label><p class="overwrite-warning" hidden>Overwrite replaces the current calendar with this proposal, including its events and hashtags. Changes published since this proposal began may be removed. Review the comparison below.</p><div class="merge-conflicts"></div><div class="merge-output"></div><label>Review note<textarea class="merge-note" maxlength="4000"></textarea></label><p class="merge-error" role="alert"></p><button type="button" class="publish-merge" disabled>Publish reviewed result</button>`;
+  document.body.append(dialog);
+  dialog.showModal();
+  let result,
+    serial = 0;
+  const resolutions = {};
+  const q = (s) => dialog.querySelector(s);
+  q(".close-merge").onclick = () => dialog.close();
+  dialog.onclose = () => dialog.remove();
+  const showValue = (v, event) =>
+    v === null || v === undefined
+      ? "Deleted / absent"
+      : event
+        ? v.map(eventView).join("")
+        : `<p>${esc(typeof v === "string" ? v : JSON.stringify(v))}</p>`;
+  async function refresh() {
+    const n = ++serial;
+    result = null;
+    q(".publish-merge").disabled = true;
+    q(".merge-error").textContent = "";
+    const strategy = q(".merge-strategy").value;
+    q(".overwrite-warning").hidden = strategy !== "overwrite";
+    try {
+      const data = await api(`/api/proposals/${p.id}/resolve`, {
+        method: "POST",
+        body: { strategy, resolutions },
+      });
+      if (n !== serial || !dialog.open) return;
+      result = data;
+      q(".merge-conflicts").innerHTML = data.conflicts
+        .map(
+          (c) =>
+            `<section class="conflict panel"><h3>${esc(c.label)}</h3><div class="conflict-versions"><div><h4>Currently published</h4>${showValue(c.current, c.event)}</div><div><h4>This proposal</h4>${showValue(c.proposal, c.event)}</div></div><label>Keep which version?<select data-conflict="${esc(c.id)}"><option value="">Choose explicitly</option><option value="current" ${resolutions[c.id] === "current" ? "selected" : ""}>Currently published</option><option value="proposal" ${resolutions[c.id] === "proposal" ? "selected" : ""}>This proposal</option></select></label></section>`,
+        )
+        .join("");
+      q(".merge-output").innerHTML =
+        `<h3>Result compared with published revision ${data.revision}</h3><p>${data.conflicts.some((c) => !c.resolved) ? "Unresolved entries currently show the published version. Resolve all choices before publishing." : "Review the final changes before publishing."}</p><div class="merged-preview"></div><details><summary>Compare all resulting changes</summary>${diffView(data.changes)}</details><label>Final approved hashtags<input class="merged-tags" value="${esc(data.content.hashtags.join(", "))}"></label>`;
+      CalendarUI.monthPreview(q(".merged-preview"), {
+        review: true,
+        load: async (start, end) => {
+          const view = await api("/api/preview", {
+            method: "POST",
+            body: { content: data.content, start, end },
+          });
+          const status = new Map([
+            ...data.changes.added.map((e) => [CalendarUI.key(e), "added"]),
+            ...data.changes.edited.map((e) => [
+              CalendarUI.key(e.after),
+              "edited",
+            ]),
+          ]);
+          view.events = view.events.map((e) => ({
+            ...e,
+            change: status.get(e.key) || "unchanged",
+          }));
+          if (data.changes.deleted.length) {
+            const removed = await api("/api/preview", {
+              method: "POST",
+              body: {
+                content: { ...data.content, events: data.changes.deleted },
+                start,
+                end,
+              },
+            });
+            view.events.push(
+              ...removed.events.map((e) => ({ ...e, change: "deleted" })),
+            );
+            view.warnings.push(...removed.warnings);
+          }
+          return view;
+        },
+      });
+      q(".publish-merge").disabled = data.conflicts.some((c) => !c.resolved);
+      q(".publish-merge").textContent =
+        strategy === "overwrite"
+          ? "Overwrite and publish reviewed result"
+          : "Merge and publish reviewed result";
+      dialog.querySelectorAll("[data-conflict]").forEach(
+        (s) =>
+          (s.onchange = () => {
+            resolutions[s.dataset.conflict] = s.value;
+            refresh();
+          }),
+      );
+    } catch (e) {
+      if (n === serial) q(".merge-error").textContent = e.message;
+    }
+  }
+  q(".merge-strategy").onchange = refresh;
+  q(".publish-merge").onclick = async () => {
+    if (!result) return;
+    q(".publish-merge").disabled = true;
+    try {
+      await api(`/api/proposals/${p.id}/review`, {
+        method: "POST",
+        body: {
+          decision: "accept",
+          reason: q(".merge-note").value,
+          strategy: q(".merge-strategy").value,
+          expected_revision: result.revision,
+          resolutions,
+          hashtags: q(".merged-tags")
+            .value.split(/[,\s]+/)
+            .filter(Boolean),
+        },
+      });
+      dialog.close();
+      notify("Reviewed calendar published.");
+      await dashboard(manager);
+    } catch (e) {
+      q(".merge-error").textContent =
+        e.message +
+        " Re-select the publication method to refresh the comparison.";
+    }
+  };
+  await refresh();
+}
 async function dashboard(manager = false) {
   if (!gate(manager)) return;
   const { proposals } = await api("/api/proposals");
   const rows = manager
     ? proposals
     : proposals.filter((p) => p.author === auth.user.id);
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">${manager ? "MANAGER WORKSPACE" : "CONTRIBUTOR WORKSPACE"}</p><h1>${manager ? "Review the next revision." : "Your contributions."}</h1><p>${manager ? "Review changes in the calendar and check the highlighted fields before publishing." : "Follow your submissions and read manager feedback."}</p></div><a class="button" href="/contribute">+ New calendar</a></div><div class="tools"><span class="pill pending">${rows.filter((p) => p.status === "pending").length} pending</span><span class="pill accepted">${rows.filter((p) => p.status === "accepted").length} accepted</span><span class="pill rejected">${rows.filter((p) => p.status === "rejected").length} rejected</span></div><section>${rows.map((p, i) => `<article class="panel review"><div class="row between"><h2>${esc(p.content.title)}</h2><span class="pill ${p.status}">${esc(p.status)}</span></div><p class="meta">${esc(p.username)} · ${esc(CalendarUI.dateText(p.created_at.slice(0, 10)))} · ${p.target ? "Update to revision " + p.base_revision : "New calendar"}</p>${p.message ? `<p>${esc(p.message)}</p>` : ""}<div class="tags">${tags(p.content.hashtags)}</div><p class="meta">${p.changes.unchanged?.length || 0} unchanged · +${p.changes.added.length} added · ${p.changes.edited.length} edited · −${p.changes.deleted.length} deleted</p><details class="review-calendar-toggle" data-id="${p.id}" ${i === 0 ? "open" : ""}><summary>Calendar preview</summary><div class="review-calendar"></div></details><details class="review-diff"><summary>Compare all entries and fields</summary>${diffView(p.changes)}</details>${p.reason ? `<p><strong>Manager feedback:</strong> ${esc(p.reason)}</p>` : ""}${manager && p.status === "pending" ? `<form class="review-form" data-id="${p.id}"><label>Approved hashtags<input name="hashtags" value="${esc(p.content.hashtags.join(", "))}"></label><label>Review note (required for rejection)<textarea name="reason" maxlength="4000"></textarea></label><div class="row"><button name="decision" value="accept">Accept & publish</button><button name="decision" value="reject" class="danger">Reject proposal</button></div></form>` : ""}</article>`).join("") || '<div class="empty"><h2>No proposals yet</h2><p>New submissions will appear here.</p></div>'}</section>`;
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">${manager ? "MANAGER WORKSPACE" : "CONTRIBUTOR WORKSPACE"}</p><h1>${manager ? "Review the next revision." : "Your contributions."}</h1><p>${manager ? "Review changes in the calendar and check the highlighted fields before publishing." : "Follow your submissions and read manager feedback."}</p></div><a class="button" href="/contribute">+ New calendar</a></div><div class="tools"><span class="pill pending">${rows.filter((p) => p.status === "pending").length} pending</span><span class="pill accepted">${rows.filter((p) => p.status === "accepted").length} accepted</span><span class="pill rejected">${rows.filter((p) => p.status === "rejected").length} rejected</span></div><section>${rows.map((p, i) => `<article class="panel review"><div class="row between"><h2>${esc(p.content.title)}</h2><span class="pill ${p.status}">${esc(p.status)}</span></div><p class="meta">${esc(p.username)} · ${esc(CalendarUI.dateText(p.created_at.slice(0, 10)))} · ${p.target ? "Update to revision " + p.base_revision : "New calendar"}</p>${p.message ? `<p>${esc(p.message)}</p>` : ""}<div class="tags">${tags(p.content.hashtags)}</div><p class="meta">${p.changes.unchanged?.length || 0} unchanged · +${p.changes.added.length} added · ${p.changes.edited.length} edited · −${p.changes.deleted.length} deleted</p><details class="review-calendar-toggle" data-id="${p.id}" ${i === 0 ? "open" : ""}><summary>Calendar preview</summary><div class="review-calendar"></div></details><details class="review-diff"><summary>Compare all entries and fields</summary>${diffView(p.changes)}</details>${p.reason ? `<p><strong>Manager feedback:</strong> ${esc(p.reason)}</p>` : ""}${manager && p.status === "pending" ? `<form class="review-form" data-id="${p.id}">${p.target ? '<p class="hint">Final hashtags are reviewed in the merge / overwrite window.</p>' : `<label>Approved hashtags<input name="hashtags" value="${esc(p.content.hashtags.join(", "))}"></label>`}<label>Review note (required for rejection)<textarea name="reason" maxlength="4000"></textarea></label><div class="row">${p.target ? `<button type="button" class="resolve-review" data-id="${p.id}">Review merge / overwrite</button>` : ""}<button name="decision" value="accept">Accept & publish</button><button name="decision" value="reject" class="danger">Reject proposal</button></div></form>` : ""}</article>`).join("") || '<div class="empty"><h2>No proposals yet</h2><p>New submissions will appear here.</p></div>'}</section>`;
   document.querySelectorAll(".review-calendar-toggle").forEach((toggle) => {
     let loaded = false;
     const load = () => {
@@ -964,11 +1120,24 @@ async function dashboard(manager = false) {
     toggle.addEventListener("toggle", load);
     load();
   });
+  document.querySelectorAll(".resolve-review").forEach(
+    (b) =>
+      (b.onclick = () =>
+        resolveReview(
+          rows.find((p) => p.id === b.dataset.id),
+          manager,
+        )),
+  );
   document.querySelectorAll(".review-form").forEach(
     (form) =>
       (form.onsubmit = safe(async (e) => {
         e.preventDefault();
         const decision = e.submitter.value;
+        const proposal = rows.find((p) => p.id === form.dataset.id);
+        if (decision === "accept" && proposal.target) {
+          await resolveReview(proposal, manager);
+          return;
+        }
         e.submitter.disabled = true;
         try {
           await api("/api/proposals/" + form.dataset.id + "/review", {
@@ -976,7 +1145,7 @@ async function dashboard(manager = false) {
             body: {
               decision,
               reason: form.elements.reason.value,
-              hashtags: form.elements.hashtags.value
+              hashtags: (form.elements.hashtags?.value || "")
                 .split(/[,\s]+/)
                 .filter(Boolean),
             },

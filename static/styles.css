@@ -985,3 +985,47 @@ button:focus-visible {
 .tools {
   flex-wrap: wrap;
 }
+.sample-entries {
+  padding-left: 0;
+  list-style: none;
+  margin: 20px 0;
+}
+.sample-entries li {
+  margin: 8px 0;
+}
+.explore-calendars {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+}
+.merge-dialog {
+  width: min(1100px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid #ccd7e7;
+  border-radius: 16px;
+  padding: 24px;
+}
+.merge-dialog::backdrop {
+  background: #15263888;
+}
+.conflict-versions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.overwrite-warning {
+  padding: 16px;
+  background: #fff2d5;
+  color: #704500;
+}
+@media (max-width: 650px) {
+  .conflict-versions {
+    grid-template-columns: 1fr;
+  }
+  .merge-dialog {
+    padding: 14px;
+  }
+}
+dialog.merge-dialog {
+  max-width: min(1100px, 94vw);
+  color: var(--ink, #193040);
+}

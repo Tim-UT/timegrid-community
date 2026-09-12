@@ -27,3 +27,30 @@ test("deadline and notice dates do not invent the missing endpoint", () => {
     "Sep 16, 2026",
   );
 });
+test("crossing endpoints preserves duration in either direction", () => {
+  const previous = { start: "2026-09-01T09:00", end: "2026-09-01T10:00" };
+  assert.deepEqual(
+    UI.correctRange(
+      previous,
+      { start: "2026-09-03T12:00", end: previous.end },
+      "start",
+    ),
+    { start: "2026-09-03T12:00", end: "2026-09-03T13:00" },
+  );
+  assert.deepEqual(
+    UI.correctRange(
+      previous,
+      { start: previous.start, end: "2026-08-31T08:00" },
+      "end",
+    ),
+    { start: "2026-08-31T07:00", end: "2026-08-31T08:00" },
+  );
+  assert.deepEqual(
+    UI.correctRange(
+      { start: "2026-09-01", end: "2026-09-03" },
+      { start: "2026-09-05", end: "2026-09-03" },
+      "start",
+    ),
+    { start: "2026-09-05", end: "2026-09-07" },
+  );
+});

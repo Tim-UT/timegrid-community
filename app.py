@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from calendar_search import score as search_score
+from calendar_merge import merge_calendar
 import hashlib, json, os, re, secrets, sqlite3, time, uuid
 from datetime import date, datetime, timezone, timedelta
 from functools import wraps
@@ -625,6 +626,10 @@ def create_app(test_config=None):
                     "description": c["description"],
                     "hashtags": c["hashtags"],
                     "event_count": len(c["events"]),
+                    "sample_entries": [
+                        {"title": e["title"], "type": entry_type(e)}
+                        for e in c["events"][:3]
+                    ],
                     "score": rank,
                 }
             )
@@ -829,6 +834,51 @@ def create_app(test_config=None):
             ]
         }
 
+    def resolve_proposal(p, b):
+        current = calendar(p["target"])
+        live = json.loads(current["content"])
+        proposed = json.loads(p["content"])
+        base_row = (
+            db()
+            .execute(
+                "SELECT content FROM revisions WHERE calendar_id=? AND revision=?",
+                (p["target"], p["base_revision"]),
+            )
+            .fetchone()
+        )
+        if not base_row:
+            problem("Original revision is unavailable.", 409)
+        if b.get("strategy") == "overwrite":
+            result, conflicts = proposed, []
+        elif b.get("strategy") == "merge":
+            if not isinstance(b.get("resolutions", {}), dict):
+                problem("Invalid conflict choices.")
+            result, conflicts = merge_calendar(
+                json.loads(base_row["content"]), live, proposed, b.get("resolutions")
+            )
+        else:
+            problem("Choose merge or overwrite.", 409)
+        if "hashtags" in b:
+            result["hashtags"] = b["hashtags"]
+        return current, result, conflicts
+
+    @app.post("/api/proposals/<pid>/resolve")
+    @require(manager=True)
+    def resolve_preview(pid):
+        p = db().execute("SELECT * FROM proposals WHERE id=?", (pid,)).fetchone()
+        if not p:
+            problem("Proposal not found.", 404)
+        if p["status"] != "pending" or not p["target"]:
+            problem("This proposal cannot be merged.", 409)
+        current, result, conflicts = resolve_proposal(p, body())
+        result = clean_content(result)
+        return {
+            "revision": current["revision"],
+            "content": result,
+            "conflicts": conflicts,
+            "changes": changes(json.loads(current["content"]), result),
+        }
+
     @app.post("/api/proposals/<pid>/review")
     @require(manager=True)
     def review(pid):
@@ -860,11 +910,20 @@ def create_app(test_config=None):
                     old = conn.execute(
                         "SELECT * FROM calendars WHERE id=?", (target,)
                     ).fetchone()
-                    if old["revision"] != p["base_revision"]:
-                        problem(
-                            "A newer revision is already published. Reject this proposal and request an updated submission.",
-                            409,
-                        )
+                    if old["revision"] != p["base_revision"] or b.get("strategy"):
+                        if b.get("expected_revision") != old["revision"]:
+                            problem(
+                                "The published calendar changed. Preview the merge again before publishing.",
+                                409,
+                            )
+                        _, c, conflicts = resolve_proposal(p, b)
+                        if any(not x["resolved"] for x in conflicts):
+                            problem(
+                                "Resolve every conflicting entry or field before publishing.",
+                                409,
+                            )
+                        c = clean_content(c)
+                        payload = dump(c)
                     revision = old["revision"] + 1
                     slug = old["slug"]
                     conn.execute(
