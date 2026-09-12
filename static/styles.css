@@ -961,3 +961,27 @@ button:focus-visible {
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   }
 }
+.advanced-search {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 12px 0;
+}
+.search-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.explore-calendars {
+  display: grid;
+  gap: 24px;
+}
+.public-preview {
+  margin: 24px 0;
+}
+.explore-calendars .card {
+  display: block;
+}
+.tools {
+  flex-wrap: wrap;
+}

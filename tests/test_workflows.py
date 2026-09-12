@@ -445,3 +445,18 @@ def test_subscription_url_import_is_authenticated_and_not_persisted(setup, monke
     assert r.status_code == 200, r.json
     assert r.json["events"][0]["title"] == "Away game"
     assert "token=private" not in str(r.json)
+
+
+def test_public_event_search_and_preview(setup):
+    _, _, slug = publish(setup)
+    c = client(setup)
+    for q in ["Orientation", "Welcome", "Hall", '"Public events"']:
+        result = c.get("/api/calendars", query_string={"q": q})
+        assert [x["slug"] for x in result.json["calendars"]] == [slug]
+    assert not c.get("/api/calendars?q=Orientation&location=Elsewhere").json[
+        "calendars"
+    ]
+    r = c.get(f"/api/calendars/{slug}/preview?start=2026-09-01&end=2026-10-01")
+    assert r.status_code == 200
+    assert "Orientation" in r.get_data(as_text=True)
+    assert c.get(f"/api/calendars/{slug}/preview?start=bad&end=bad").status_code == 400

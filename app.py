@@ -1,6 +1,7 @@
 """TimeGrid: public subscription calendars with reviewed contributions."""
 
 from __future__ import annotations
+from calendar_search import score as search_score
 import hashlib, json, os, re, secrets, sqlite3, time, uuid
 from datetime import date, datetime, timezone, timedelta
 from functools import wraps
@@ -609,13 +610,8 @@ def create_app(test_config=None):
         results = []
         for row in db().execute("SELECT * FROM calendars ORDER BY updated_at DESC"):
             c = json.loads(row["content"])
-            if (
-                q
-                and q
-                not in (
-                    c["title"] + " " + c["description"] + " " + " ".join(c["hashtags"])
-                ).lower()
-            ):
+            rank = search_score(c, request.args)
+            if rank is None:
                 continue
             if tag and tag not in c["hashtags"]:
                 continue
@@ -629,13 +625,25 @@ def create_app(test_config=None):
                     "description": c["description"],
                     "hashtags": c["hashtags"],
                     "event_count": len(c["events"]),
+                    "score": rank,
                 }
             )
+        results.sort(key=lambda c: c["score"], reverse=True)
         return {"calendars": results}
 
     @app.get("/api/calendars/<slug>")
     def get_calendar(slug):
         return public(calendar(slug))
+
+    @app.get("/api/calendars/<slug>/preview")
+    def public_preview(slug):
+        c = get_calendar(slug)
+        try:
+            return preview(
+                c["content"], request.args.get("start", ""), request.args.get("end", "")
+            )
+        except (ValueError, TypeError):
+            problem("Choose a valid calendar date range of up to six weeks.")
 
     @app.get("/api/calendars/<slug>/revisions")
     def history(slug):

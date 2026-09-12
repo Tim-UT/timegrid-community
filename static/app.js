@@ -110,15 +110,62 @@ function gate(manager = false) {
   }
   return true;
 }
+function searchTools(prefix) {
+  return `<details class="advanced-search"><summary>Advanced search</summary><div class="search-fields"><label>Rank best matches by<select id="${prefix}-priority" name="priority">${[
+    ["hashtag", "Hashtags (default)"],
+    ["event", "Event name"],
+    ["location", "Location"],
+    ["description", "Description"],
+    ["calendar", "Calendar title"],
+  ]
+    .map(([v, t]) => `<option value="${v}">${t}</option>`)
+    .join("")}</select></label>${[
+    ["phrase", "Exact phrase"],
+    ["exclude", "Exclude words"],
+    ["hashtag", "Hashtag contains"],
+    ["event", "Event name contains"],
+    ["location", "Location contains"],
+    ["description", "Description contains"],
+  ]
+    .map(
+      ([v, t]) =>
+        `<label>${t}<input name="${v}" data-search-filter="${v}"></label>`,
+    )
+    .join(
+      "",
+    )}</div><p class="hint">Search all words across calendar and event details. Use quotes for an exact phrase. Filters narrow results; ranking changes their order.</p></details>`;
+}
+function searchParams(root, query) {
+  const params = new URLSearchParams({ q: query });
+  root
+    .querySelectorAll("[name=priority],[data-search-filter]")
+    .forEach((i) => params.set(i.name, i.value));
+  return params;
+}
+function publicMonth(node, c) {
+  return CalendarUI.monthPreview(node, {
+    load: (start, end) =>
+      api(
+        "/api/calendars/" +
+          encodeURIComponent(c.id) +
+          "/preview?" +
+          new URLSearchParams({ start, end }),
+      ),
+  });
+}
 async function explore() {
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">THE PUBLIC CALENDAR REPOSITORY</p><h1>Find your next calendar.</h1><p>Browse, subscribe, and stay in sync. No account needed.</p></div><a class="button" href="/contribute">+ Contribute a calendar</a></div><form class="tools" id="search"><input aria-label="Search calendars" name="q" placeholder="Search calendars or hashtags"><button>Search</button><button type="button" class="quiet" id="combine">Combine selected</button></form><div id="results"></div>`;
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">THE PUBLIC CALENDAR REPOSITORY</p><h1>Find your next calendar.</h1><p>Browse, subscribe, and stay in sync. No account needed.</p></div><a class="button" href="/contribute">+ Contribute a calendar</a></div><form class="tools" id="search"><input aria-label="Search calendars" name="q" placeholder="Search hashtags, event names, descriptions, locations…"><button>Search</button><button type="button" class="quiet" id="combine">Create draft from selected calendars</button>${searchTools("explore")}</form><p class="hint">Select two or more calendars to merge their entries into a new draft for manager review.</p><div id="results"></div>`;
   const load = async () => {
     const data = await api(
-      "/api/calendars?q=" + encodeURIComponent($("#search [name=q]").value),
+      "/api/calendars?" +
+        searchParams($("#search"), $("#search [name=q]").value),
     );
     $("#results").innerHTML = data.calendars.length
-      ? `<div class="grid">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
-      : '<div class="empty"><h2>No published calendars yet</h2><p>Upload the first calendar for review, or try a different search.</p><a href="/contribute">Contribute a calendar →</a></div>';
+      ? `<div class="explore-calendars">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><section class="public-preview" data-preview="${esc(c.id)}"></section><div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
+      : '<div class="empty"><h2>No matching calendars</h2><p>Try different words or remove an advanced search filter.</p><a href="/contribute">Contribute a calendar →</a></div>';
+    data.calendars.forEach((c) =>
+      publicMonth(document.querySelector(`[data-preview="${c.id}"]`), c),
+    );
   };
   $("#search").onsubmit = safe(async (e) => {
     e.preventDefault();
@@ -140,15 +187,8 @@ async function detail(slug) {
   const c = await api("/api/calendars/" + encodeURIComponent(slug)),
     content = c.content;
   const url = location.origin + "/feeds/" + c.slug + ".ics";
-  app.innerHTML = `<div class="top"><div><a href="/">← Calendar repository</a><h1>${esc(content.title)}</h1><p>${esc(content.description)}</p><div class="tags">${tags(content.hashtags)}</div></div><a class="button" href="/contribute?edit=${esc(c.slug)}">Propose an edit</a></div><div class="split"><section class="panel"><div class="row between"><h2>Events</h2><span class="meta">${content.events.length} event definitions</span></div>${
-    content.events.length
-      ? content.events
-          .slice()
-          .sort((a, b) => (a.start || a.end).localeCompare(b.start || b.end))
-          .map(eventView)
-          .join("")
-      : "<p>This calendar has no events.</p>"
-  }</section><aside class="stack"><section class="panel"><p class="eyebrow">SUBSCRIBE</p><h2>Keep your calendar in sync</h2><p class="hint">Paste this subscription URL into Apple Calendar, Google Calendar, Outlook, or another calendar app. Accepted updates appear when your app refreshes.</p><label>Subscription URL<input class="feed-url" id="feed-url" readonly value="${esc(url)}"></label><div class="row"><button id="copy-feed">Copy URL</button><a href="${esc(url)}" class="button quiet">Download ICS</a></div><p class="hint">An ICS download is a snapshot. A URL subscription receives updates.</p></section><section class="panel"><h3>Publication history</h3><p class="meta">Current revision ${c.revision}</p><div id="history"></div>${content.sources.length ? `<h3>Combined from</h3>${content.sources.map((s) => `<p class="meta"><a href="/calendars/${esc(s.id)}">Source calendar</a> · revision ${s.revision}</p>`).join("")}<p class="hint">Combined calendars are reviewed snapshots of their sources.</p>` : ""}</section></aside></div>`;
+  app.innerHTML = `<div class="top"><div><a href="/">← Calendar repository</a><h1>${esc(content.title)}</h1><p>${esc(content.description)}</p><div class="tags">${tags(content.hashtags)}</div></div><a class="button" href="/contribute?edit=${esc(c.slug)}">Propose an edit</a></div><div class="split"><section class="panel" id="public-calendar"></section><aside class="stack"><section class="panel"><p class="eyebrow">SUBSCRIBE</p><h2>Keep your calendar in sync</h2><p class="hint">Paste this subscription URL into Apple Calendar, Google Calendar, Outlook, or another calendar app. Accepted updates appear when your app refreshes.</p><label>Subscription URL<input class="feed-url" id="feed-url" readonly value="${esc(url)}"></label><div class="row"><button id="copy-feed">Copy URL</button><a href="${esc(url)}" class="button quiet">Download ICS</a></div><p class="hint">An ICS download is a snapshot. A URL subscription receives updates.</p></section><section class="panel"><h3>Publication history</h3><p class="meta">Current revision ${c.revision}</p><div id="history"></div>${content.sources.length ? `<h3>Combined from</h3>${content.sources.map((s) => `<p class="meta"><a href="/calendars/${esc(s.id)}">Source calendar</a> · revision ${s.revision}</p>`).join("")}<p class="hint">Combined calendars are reviewed snapshots of their sources.</p>` : ""}</section></aside></div>`;
+  publicMonth($("#public-calendar"), c);
   $("#copy-feed").onclick = safe(async () => {
     await navigator.clipboard.writeText(url);
     notify("Subscription URL copied.");
@@ -175,7 +215,6 @@ async function editor() {
   if (!gate()) return;
   const UI = CalendarUI,
     params = new URLSearchParams(location.search);
-  const catalog = (await api("/api/calendars")).calendars;
   target = null;
   base = 0;
   draft = blank();
@@ -203,15 +242,7 @@ async function editor() {
       body: { ids: params.get("combine").split(",") },
     });
   draft.events = draft.events.map(normalize);
-  const options =
-    '<option value="">Choose a published calendar</option>' +
-    catalog
-      .map(
-        (c) =>
-          `<option value="${esc(c.id)}">${esc(c.title)} · revision ${c.revision}</option>`,
-      )
-      .join("");
-  app.innerHTML = `<div class="top"><div><p class="eyebrow">CALENDAR EDITOR</p><h1 id="editor-heading"></h1><p id="mode-help"></p></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-mode="create">Create mode</button><button type="button" data-mode="proposal">Proposal mode</button></div></div><div class="proposal-source panel" id="proposal-source"><label>Calendar to update<select id="target-calendar">${options}</select></label><button type="button" class="quiet" id="load-target">Load calendar to edit</button><p class="hint" id="target-status"></p></div><div class="editor-layout"><form id="editor" class="panel editor-form"><label>Calendar title<input name="title" required maxlength="160"></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Entries <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add entry</button></div><details class="import-tools"><summary>Import entries</summary><div class="import-switch" role="group" aria-label="Import source"><button type="button" class="quiet" data-import="device" aria-pressed="true">Upload from device</button><button type="button" class="quiet" data-import="site" aria-pressed="false">From this site</button><button type="button" class="quiet" data-import="link" aria-pressed="false">Subscription link</button></div><div id="device-import"><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></div><div id="site-import" hidden><p class="hint">Browse published calendars and select one or more sources.</p><button type="button" class="quiet" id="browse-sources">Browse calendars</button></div><div id="link-import" hidden><label>Calendar subscription URL<input id="subscription-url" type="url" placeholder="https://… or webcal://…"></label><button type="button" class="quiet" id="import-link">Import from link</button><p class="hint">Use the provider’s Subscribe or iCal link, such as a sports schedule. This imports its current entries; published updates still go through review.</p></div><p class="hint">Imported entries are added to this draft. Your existing entries stay in place.</p></details><div id="events"></div><div class="submit-bar"><button type="submit" id="submit-draft"></button><p class="hint">A manager reviews the calendar before it is published.</p></div></form><section class="panel editor-preview" id="editor-preview" aria-label="Draft calendar preview"></section></div><dialog id="source-picker" class="source-picker"><div class="row between"><h2>Explore calendar sources</h2><button type="button" class="quiet" id="close-sources" aria-label="Close source browser">×</button></div><label>Search calendars<input id="source-search" type="search" placeholder="Search titles, descriptions, or hashtags"></label><div class="source-picker-tools"><label class="check"><input type="checkbox" id="select-visible-sources">Select search results</label><span id="source-selection-count" class="meta" role="status">0 selected</span></div><div id="source-results" class="source-results"></div><div class="source-picker-footer"><p id="source-error" role="alert"></p><button type="button" id="import-selected-sources" disabled>Add selected calendars</button></div></dialog>`;
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">CALENDAR EDITOR</p><h1 id="editor-heading"></h1><p id="mode-help"></p></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-mode="create">Create mode</button><button type="button" data-mode="proposal">Proposal mode</button></div></div><div class="proposal-source panel" id="proposal-source"><input type="hidden" id="target-calendar"><button type="button" class="quiet" id="choose-target">Browse calendars to update</button><p class="hint" id="target-status"></p></div><div class="editor-layout"><form id="editor" class="panel editor-form"><label>Calendar title<input name="title" required maxlength="160"></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><label>Hashtags<input name="hashtags" placeholder="university, toronto, deadlines"></label><div class="row between"><h2>Entries <span class="meta" id="event-count"></span></h2><button type="button" id="add-event" class="quiet">+ Add entry</button></div><details class="import-tools"><summary>Import entries</summary><div class="import-switch" role="group" aria-label="Import source"><button type="button" class="quiet" data-import="device" aria-pressed="true">Upload from device</button><button type="button" class="quiet" data-import="site" aria-pressed="false">From this site</button><button type="button" class="quiet" data-import="link" aria-pressed="false">Subscription link</button></div><div id="device-import"><label>Calendar file<input id="upload" type="file" accept=".ics,.ical,text/calendar"></label></div><div id="site-import" hidden><p class="hint">Browse published calendars and select one or more sources.</p><button type="button" class="quiet" id="browse-sources">Browse calendars</button></div><div id="link-import" hidden><label>Calendar subscription URL<input id="subscription-url" type="url" placeholder="https://… or webcal://…"></label><button type="button" class="quiet" id="import-link">Import from link</button><p class="hint">Use the provider’s Subscribe or iCal link, such as a sports schedule. This imports its current entries; published updates still go through review.</p></div><p class="hint">Imported entries are added to this draft. Your existing entries stay in place.</p></details><div id="events"></div><div class="submit-bar"><button type="submit" id="submit-draft"></button><p class="hint">A manager reviews the calendar before it is published.</p></div></form><section class="panel editor-preview" id="editor-preview" aria-label="Draft calendar preview"></section></div><dialog id="source-picker" class="source-picker"><div class="row between"><h2>Explore calendar sources</h2><button type="button" class="quiet" id="close-sources" aria-label="Close source browser">×</button></div><label>Search calendars<input id="source-search" type="search" placeholder="Search hashtags, events, descriptions, or locations"></label>${searchTools("source")}<div class="source-picker-tools"><label class="check"><input type="checkbox" id="select-visible-sources">Select search results</label><span id="source-selection-count" class="meta" role="status">0 selected</span></div><div id="source-results" class="source-results"></div><div class="source-picker-footer"><p id="source-error" role="alert"></p><button type="button" id="import-selected-sources" disabled>Add selected calendars</button></div></dialog>`;
   const form = $("#editor");
   function metadata() {
     form.elements.title.value = draft.title;
@@ -304,7 +335,7 @@ async function editor() {
     $("#submit-draft").textContent =
       mode === "create" ? "Submit new calendar" : "Submit update proposal";
     $("#target-status").textContent = target
-      ? `Editing revision ${base}. Switching modes keeps your current draft.`
+      ? `Editing ${draft.title} · revision ${base}. Switching modes keeps your current draft.`
       : "Choose and load a calendar before submitting an update.";
     if (target) $("#target-calendar").value = target;
   }
@@ -317,8 +348,7 @@ async function editor() {
         dirty = true;
       }),
   );
-  $("#load-target").onclick = safe(async () => {
-    const id = $("#target-calendar").value;
+  async function loadTarget(id) {
     if (!id) throw Error("Choose a calendar to update.");
     if (dirty && !confirm("Load this calendar and replace the current draft?"))
       return;
@@ -332,7 +362,8 @@ async function editor() {
     modeUI();
     dirty = false;
     previewPanel.focus(draft.events[0]?.start || draft.events[0]?.end);
-  });
+    return true;
+  }
   function renderEntries() {
     $("#event-count").textContent = `(${draft.events.length})`;
     $("#events").innerHTML =
@@ -617,19 +648,28 @@ async function editor() {
     e.target.value = "";
   });
   const chosen = new Set();
-  let shown = [];
-  function sourceResults() {
-    const query = $("#source-search").value.trim().toLowerCase();
-    shown = catalog.filter((c) =>
-      (c.title + " " + c.description + " " + c.hashtags.join(" "))
-        .toLowerCase()
-        .includes(query),
-    );
+  let shown = [],
+    pickerMode = "import",
+    searchSerial = 0;
+  async function sourceResults() {
+    const serial = ++searchSerial;
+    let response;
+    try {
+      response = await api(
+        "/api/calendars?" +
+          searchParams($("#source-picker"), $("#source-search").value),
+      );
+    } catch (e) {
+      $("#source-error").textContent = e.message;
+      return;
+    }
+    if (serial !== searchSerial) return;
+    shown = response.calendars;
     $("#source-results").innerHTML = shown.length
       ? shown
           .map(
             (c) =>
-              `<label class="source-choice"><input type="checkbox" data-source-id="${esc(c.id)}" ${chosen.has(c.id) ? "checked" : ""}><span><strong>${esc(c.title)}</strong><span class="source-description">${esc(c.description || "Public calendar")}</span><span class="tags">${tags(c.hashtags)}</span><span class="meta">${c.event_count} entries · revision ${c.revision}</span></span></label>`,
+              `<label class="source-choice"><input type="${pickerMode === "target" ? "radio" : "checkbox"}" name="source-choice" data-source-id="${esc(c.id)}" ${chosen.has(c.id) ? "checked" : ""}><span><strong>${esc(c.title)}</strong><span class="source-description">${esc(c.description || "Public calendar")}</span><span class="tags">${tags(c.hashtags)}</span><span class="meta">${c.event_count} entries · revision ${c.revision}</span></span></label>`,
           )
           .join("")
       : '<p class="hint">No matching calendars. Try another title or hashtag.</p>';
@@ -643,18 +683,31 @@ async function editor() {
     document.querySelectorAll("[data-source-id]").forEach(
       (input) =>
         (input.onchange = () => {
+          if (pickerMode === "target") chosen.clear();
           if (input.checked) chosen.add(input.dataset.sourceId);
           else chosen.delete(input.dataset.sourceId);
           sourceResults();
         }),
     );
   }
-  $("#browse-sources").onclick = () => {
+  function openSources(mode) {
+    pickerMode = mode;
+    chosen.clear();
+    $("#source-picker h2").textContent =
+      mode === "target"
+        ? "Choose a calendar to update"
+        : "Explore calendar sources";
+    $("#select-visible-sources").parentElement.hidden = mode === "target";
+    $("#import-selected-sources").textContent =
+      mode === "target" ? "Load selected calendar" : "Add selected calendars";
     sourceResults();
     $("#source-error").textContent = "";
     $("#source-picker").showModal();
     $("#source-search").focus();
-  };
+  }
+  $("#browse-sources").onclick = () => openSources("import");
+  $("#choose-target").onclick = () => openSources("target");
+  $("#source-picker .advanced-search").addEventListener("input", sourceResults);
   $("#close-sources").onclick = () => $("#source-picker").close();
   $("#source-search").oninput = sourceResults;
   $("#select-visible-sources").onchange = (e) => {
@@ -668,6 +721,10 @@ async function editor() {
     button.disabled = true;
     $("#source-error").textContent = "";
     try {
+      if (pickerMode === "target") {
+        if (await loadTarget([...chosen][0])) $("#source-picker").close();
+        return;
+      }
       if (chosen.size > 20) throw Error("Select up to 20 calendars at a time.");
       let imported;
       if (chosen.size === 1) {
