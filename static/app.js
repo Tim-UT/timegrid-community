@@ -1170,6 +1170,78 @@ async function dashboard(manager = false) {
   );
 }
 
+async function chooseFolder(source) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "source-picker";
+  dialog.innerHTML = `<div class="row between"><h2>Add to my calendars</h2><button type="button" class="quiet close-picker">Close</button></div><p>Choose a folder. The source is saved immediately.</p><div class="folder-choices"></div><details class="new-folder-picker"><summary>Create a new folder</summary><form><label>Folder name<input name="name" required maxlength="100" placeholder="Life or Work"></label><button>Create folder and add calendar</button></form></details><p class="picker-status" role="status"></p>`;
+  document.body.append(dialog);
+  dialog.showModal();
+  const q = (s) => dialog.querySelector(s);
+  q(".close-picker").onclick = () => dialog.close();
+  dialog.onclose = () => dialog.remove();
+  async function load() {
+    const { folders } = await api("/api/folders");
+    if (!dialog.open) return;
+    q(".folder-choices").innerHTML =
+      folders
+        .map(
+          (f) =>
+            `<div class="row between folder-choice"><span><strong>${esc(f.name)}</strong><span class="meta"> · ${f.sources.length} sources</span></span><button type="button" data-folder="${esc(f.id)}" ${f.sources.includes(source) ? "disabled" : ""}>${f.sources.includes(source) ? "✓ Already added" : "Add here"}</button></div>`,
+        )
+        .join("") || "<p>No folders yet. Create one below.</p>";
+    if (!folders.length) q(".new-folder-picker").open = true;
+    dialog.querySelectorAll("[data-folder]").forEach(
+      (b) =>
+        (b.onclick = async () => {
+          b.disabled = true;
+          q(".picker-status").textContent = "";
+          try {
+            await api("/api/folders/" + b.dataset.folder + "/sources", {
+              method: "POST",
+              body: { source },
+            });
+            await load();
+            q(".picker-status").textContent =
+              "Calendar added. Your subscription now follows this source.";
+          } catch (e) {
+            q(".picker-status").textContent = e.message;
+            b.disabled = false;
+          }
+        }),
+    );
+  }
+  q("form").onsubmit = async (e) => {
+    e.preventDefault();
+    const button = q("form button");
+    button.disabled = true;
+    try {
+      await api("/api/folders", {
+        method: "POST",
+        body: { name: q("[name=name]").value, source },
+      });
+      q("form").reset();
+      q(".new-folder-picker").open = false;
+      await load();
+      q(".picker-status").textContent = "Folder created and calendar added.";
+    } catch (e) {
+      q(".picker-status").textContent = e.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  try {
+    await load();
+  } catch (e) {
+    q(".picker-status").textContent = e.message;
+  }
+}
+document.addEventListener("click", (e) => {
+  const link = e.target.closest('a[href^="/my-calendars?add="]');
+  if (!link || !auth.user || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)
+    return;
+  e.preventDefault();
+  chooseFolder(new URL(link.href).searchParams.get("add"));
+});
 async function myCalendars() {
   if (!gate()) return;
   const [{ folders }, { calendars }] = await Promise.all([
@@ -1195,7 +1267,7 @@ async function myCalendars() {
       serial = 0;
     const url = location.origin + "/personal/" + f.token + ".ics";
     $("#folder-detail").innerHTML =
-      `<h2>${esc(f.name)}</h2><label>Folder name<input id="folder-name" maxlength="100" value="${esc(f.name)}"></label><label>Subscription link<input id="folder-feed" readonly value="${esc(url)}"></label><div class="row"><button type="button" id="copy-folder">Copy subscription link</button><a class="button quiet" href="${esc(url)}">Download ICS</a></div><p class="hint">This link always includes the latest approved versions of your saved sources. Calendar apps refresh on their own schedule. Anyone with this private link can read the folder; resetting it disables the old link.</p>${incoming && !chosen.has(incoming) ? '<button id="add-incoming" class="quiet">Select the calendar you brought here</button>' : ""}<h3>Selected sources <span id="folder-count"></span></h3><div id="selected-sources"></div><label>Find calendars<input id="folder-search" type="search" placeholder="Search events, locations, or hashtags"></label>${searchTools("folder")}<div class="source-results" id="folder-results"></div><p id="folder-message" role="status"></p><button id="save-folder">Save folder</button><p class="hint">Save source selections to update your subscription. The preview below shows saved selections.</p><div id="folder-preview"></div><div class="row"><button id="reset-folder" class="quiet">Reset subscription link</button><button id="delete-folder" class="danger">Delete folder</button></div>`;
+      `<h2>${esc(f.name)}</h2><label>Folder name<input id="folder-name" maxlength="100" value="${esc(f.name)}"></label><label>Subscription link<input id="folder-feed" readonly value="${esc(url)}"></label><div class="row"><button type="button" id="copy-folder">Copy subscription link</button><a class="button quiet" href="${esc(url)}">Download ICS</a></div><p class="hint">This link always includes the latest approved versions of your saved sources. Calendar apps refresh on their own schedule. Anyone with this private link can read the folder; resetting it disables the old link.</p>${incoming && !chosen.has(incoming) ? '<button id="add-incoming" class="quiet">Select the calendar you brought here</button>' : ""}<h3>Selected sources <span id="folder-count"></span></h3><div id="selected-sources"></div><details class="folder-browser"><summary>Add more calendars</summary><label>Find calendars<input id="folder-search" type="search" placeholder="Search events, locations, or hashtags"></label>${searchTools("folder")}<div class="source-results" id="folder-results"></div></details><p id="folder-message" role="status"></p><button id="save-folder">Save folder</button><p class="hint">Save source selections to update your subscription. The preview below shows saved selections.</p><div id="folder-preview"></div><div class="row"><button id="reset-folder" class="quiet">Reset subscription link</button><button id="delete-folder" class="danger">Delete folder</button></div>`;
     const selected = () => {
       $("#folder-count").textContent = `(${chosen.size})`;
       $("#selected-sources").innerHTML =

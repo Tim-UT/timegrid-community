@@ -736,13 +736,43 @@ def create_app(test_config=None):
             >= 30
         ):
             problem("You can manage up to 30 folders.")
+        source = body().get("source")
+        if source is not None and not isinstance(source, str):
+            problem("Choose a source calendar.")
+        sources = [calendar(source)["id"]] if source else []
         fid = identifier()
         db().execute(
             "INSERT INTO folders VALUES(?,?,?,?,?,?)",
-            (fid, user()["id"], name, "[]", secrets.token_urlsafe(32), 1),
+            (fid, user()["id"], name, dump(sources), secrets.token_urlsafe(32), 1),
         )
         db().commit()
         return {"id": fid}, 201
+
+    @app.post("/api/folders/<fid>/sources")
+    @require()
+    def add_folder_source(fid):
+        source = body().get("source")
+        if not isinstance(source, str):
+            problem("Choose a source calendar.")
+        cid = calendar(source)["id"]
+        conn = db()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = folder(fid)
+            ids = json.loads(row["sources"])
+            if cid not in ids:
+                if len(ids) >= 50:
+                    problem("A folder can follow up to 50 calendars.")
+                ids.append(cid)
+                conn.execute(
+                    "UPDATE folders SET sources=?,revision=revision+1 WHERE id=?",
+                    (dump(ids), fid),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return {"ok": True}
 
     @app.post("/api/folders/<fid>")
     @require()

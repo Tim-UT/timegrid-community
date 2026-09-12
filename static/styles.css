@@ -1049,3 +1049,20 @@ dialog.merge-dialog {
     grid-template-columns: 1fr;
   }
 }
+.folder-browser {
+  margin: 20px 0;
+}
+.folder-browser > summary,
+.new-folder-picker > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 12px 0;
+}
+.folder-choice {
+  padding: 14px 0;
+  border-bottom: 1px solid #dce4ef;
+}
+.folder-choices {
+  max-height: 45vh;
+  overflow: auto;
+}

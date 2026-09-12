@@ -605,3 +605,21 @@ def test_folder_combines_multiple_sources_with_distinct_uids(setup):
         client(setup).get("/personal/" + token + ".ics").data
     ).walk("VEVENT")
     assert len(events) == 2 and len({str(e["uid"]) for e in events}) == 2
+
+
+def test_folder_picker_add_is_idempotent_and_owner_only(setup):
+    a, m, slug = publish(setup)
+    other = client(setup, "other")
+    cid = a.get("/api/calendars/" + slug).json["id"]
+    fid = post(a, "/api/folders", {"name": "Life", "source": cid}).json["id"]
+    assert a.get("/api/folders").json["folders"][0]["sources"] == [cid]
+    assert (
+        post(other, f"/api/folders/{fid}/sources", {"source": cid}).status_code == 404
+    )
+    assert post(a, f"/api/folders/{fid}/sources", {"source": cid}).status_code == 200
+    assert a.get("/api/folders").json["folders"][0]["sources"] == [cid]
+    assert (
+        post(a, "/api/folders", {"name": "Invalid", "source": "missing"}).status_code
+        == 404
+    )
+    assert len(a.get("/api/folders").json["folders"]) == 1
