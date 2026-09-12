@@ -153,7 +153,7 @@ def test_edit_reject_accept_and_stale(setup):
     )
     feed = anon.get("/feeds/" + slug + ".ics")
     assert b"Updated orientation" in feed.data
-    assert b"SEQUENCE:2" in feed.data
+    assert b"SEQUENCE:3" in feed.data
     assert (
         post(m, f"/api/proposals/{p1}/review", {"decision": "accept"}).status_code
         == 409
@@ -337,7 +337,7 @@ def test_three_entry_types_repeat_preview_and_no_explanation(setup):
         roundtrip = decode_ics(raw)
     due = next(e for e in roundtrip["events"] if e["type"] == "deadline")
     assert not due["start"] and due["end"]
-    assert b"BEGIN:VTODO" in raw and b"DUE;TZID=America/Toronto:" in raw
+    assert b"BEGIN:VTODO" not in raw and b"X-TIMEGRID-TYPE:deadline" in raw
     current = a.get("/api/calendars/" + slug).json
     current["content"]["events"][0]["title"] = "Workshop updated"
     result = post(
@@ -623,3 +623,38 @@ def test_folder_picker_add_is_idempotent_and_owner_only(setup):
         == 404
     )
     assert len(a.get("/api/folders").json["folders"]) == 1
+
+
+def test_deadlines_render_as_events_in_public_and_personal_feeds(setup):
+    c = content()
+    c["events"] = [
+        {
+            "uid": "due",
+            "title": "Submission",
+            "type": "deadline",
+            "start": "",
+            "end": "2026-09-15T17:00",
+            "timezone": "America/Toronto",
+        }
+    ]
+    a, m, slug = publish(setup, c)
+    source = a.get("/api/calendars/" + slug).json
+    assert source["content"]["events"][0]["type"] == "deadline"
+    fid = post(a, "/api/folders", {"name": "Deadlines", "source": source["id"]}).json[
+        "id"
+    ]
+    f = next(f for f in a.get("/api/folders").json["folders"] if f["id"] == fid)
+    from icalendar import Calendar
+    from app import decode_ics
+
+    for path in ["/feeds/" + slug + ".ics", "/personal/" + f["token"] + ".ics"]:
+        raw = client(setup).get(path).data
+        cal = Calendar.from_ical(raw)
+        assert not cal.walk("VTODO") and len(cal.walk("VEVENT")) == 1
+        event = cal.walk("VEVENT")[0]
+        assert event.decoded("DTSTART").hour == 17
+        assert str(event["SUMMARY"]) == "[Deadline] Submission"
+        with setup.app_context():
+            imported = decode_ics(raw)["events"][0]
+        assert imported["type"] == "deadline" and imported["title"] == "Submission"
+        assert imported["start"] == "" and "17:00" in imported["end"]

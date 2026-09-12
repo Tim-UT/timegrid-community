@@ -118,3 +118,11 @@ The UI uses plain JavaScript and CSS with no frontend build step. The backend is
 ## License
 
 AGPL-3.0; see LICENSE. Third-party dependencies retain their own licenses.
+
+## Calendar app compatibility
+
+Public feeds, personal-folder subscriptions, and ICS downloads export deadlines as `VEVENT` markers instead of `VTODO` tasks. Timed markers begin exactly at the due time and last one minute for display; date-only deadlines use an all-day event with an exclusive next-day end. The `[Deadline]` title and transparent/free availability distinguish these markers from appointments. TimeGrid itself keeps deadlines as due-only entries. Notices retain their existing start-only event representation.
+
+UIDs, recurrence rules, exception dates, overridden occurrences, and timezones remain attached. Due-relative alarms are anchored to the marker start. TimeGrid-specific properties restore the deadline type and original title on re-import. Feed sequences include a format-version increment so existing subscriptions can refresh their representation. No subscription URL changes are necessary.
+
+This targets the event-based ICS format used by [Google Calendar](https://support.google.com/calendar/answer/37118?hl=en), [Apple Calendar subscriptions](https://support.apple.com/en-mide/102301), and [Outlook subscriptions](https://support.microsoft.com/en-us/outlook/import-or-subscribe-to-a-calendar-in-outlook-com-or-outlook-on-the-web), following [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545.html). Automated tests validate event serialization, due times, recurrence/exception preservation, alarm anchoring, and round-trip imports. Rendering in every native app/version has not been directly verified. Refresh the subscription after updating; cloud services need a publicly reachable HTTPS feed URL (a localhost URL is only reachable on the same computer).

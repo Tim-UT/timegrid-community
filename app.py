@@ -3,6 +3,7 @@
 from __future__ import annotations
 from calendar_search import score as search_score
 from calendar_merge import merge_calendar
+from calendar_compat import calendar_event, restore_deadline
 import hashlib, json, os, re, secrets, sqlite3, time, uuid
 from datetime import date, datetime, timezone, timedelta
 from functools import wraps
@@ -59,6 +60,7 @@ def decode_ics(raw):
             raise ValueError()
         events = []
         for ev in (c for c in cal.subcomponents if c.name in ("VEVENT", "VTODO")):
+            ev = restore_deadline(ev)
             kind = (
                 "deadline"
                 if ev.name == "VTODO"
@@ -345,8 +347,10 @@ def export_ics(content, revision):
         cal.add_component(Timezone.from_ical(raw))
     for item in content["events"]:
         ev = component(item["raw"], content["timezones"])
+        if entry_type(item) == "deadline":
+            ev = calendar_event(ev)
         ev.pop("SEQUENCE", None)
-        ev.add("sequence", item.get("_sequence", revision))
+        ev.add("sequence", item.get("_sequence", revision) + 1)
         cal.add_component(ev)
     return cal.to_ical()
 
