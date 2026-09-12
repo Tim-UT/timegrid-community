@@ -27,6 +27,7 @@ The command securely prompts for a password. Existing accounts are never silentl
 ## Workflow
 
 - **Explore**: browse compact cards with sample entry names and search calendar titles, hashtags, event names, descriptions, and locations. Hashtags rank first by default; advanced search supports preferred ranking fields, exact phrases, excluded words, and field filters. Public calendar pages show recurring events in a month preview; select an entry for details, copy a subscription URL, or download ICS.
+- **My calendars**: signed-in users can create up to 30 named folders (Life, Work, etc.), each following up to 50 published sources. Save selections and subscribe once to the folder’s private link. Every feed request uses the latest approved source revisions; calendar apps control refresh timing. Folder feeds preserve source identity, so overlapping sources can contain duplicate real-world events. Rename, remove sources, reset links, or delete folders independently of the public sources. Anyone holding a subscription link can read its contents; folder management requires its owner’s login.
 - **Contribute**: start a calendar, import an ICS file, or choose calendars in Explore and combine them. Proposed edits start from a specific published revision.
 - **My proposals**: contributors see only their own submissions and manager feedback.
 - **Manage**: managers see the review queue and full event/metadata diffs. They can correct hashtags during approval or reject with a reason.

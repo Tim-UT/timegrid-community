@@ -346,7 +346,7 @@ def export_ics(content, revision):
     for item in content["events"]:
         ev = component(item["raw"], content["timezones"])
         ev.pop("SEQUENCE", None)
-        ev.add("sequence", revision)
+        ev.add("sequence", item.get("_sequence", revision))
         cal.add_component(ev)
     return cal.to_ical()
 
@@ -434,6 +434,7 @@ def create_app(test_config=None):
         CREATE INDEX IF NOT EXISTS proposals_author_status ON proposals(author,status);
         CREATE INDEX IF NOT EXISTS proposals_status ON proposals(status);
         CREATE TABLE IF NOT EXISTS revisions(calendar_id TEXT NOT NULL REFERENCES calendars(id),revision INTEGER NOT NULL,content TEXT NOT NULL,proposal_id TEXT REFERENCES proposals(id),created_at TEXT NOT NULL,PRIMARY KEY(calendar_id,revision));
+        CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,sources TEXT NOT NULL,token TEXT UNIQUE NOT NULL,revision INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY,count INTEGER NOT NULL,expires INTEGER NOT NULL);
         """)
         db().commit()
@@ -521,6 +522,7 @@ def create_app(test_config=None):
     @app.get("/calendars/<slug>")
     @app.get("/contribute")
     @app.get("/dashboard")
+    @app.get("/my-calendars")
     @app.get("/manage")
     def index(slug=None):
         return render_template("index.html")
@@ -662,6 +664,150 @@ def create_app(test_config=None):
                 )
             ]
         }
+
+    def folder(fid):
+        row = (
+            db()
+            .execute(
+                "SELECT * FROM folders WHERE id=? AND owner=?", (fid, user()["id"])
+            )
+            .fetchone()
+        )
+        if not row:
+            problem("Folder not found.", 404)
+        return row
+
+    def folder_content(row):
+        result = {
+            "title": row["name"],
+            "description": "Your selected TimeGrid calendars",
+            "hashtags": [],
+            "sources": [],
+            "timezones": [],
+            "events": [],
+        }
+        sequence = row["revision"]
+        for cid in json.loads(row["sources"]):
+            source = calendar(cid)
+            content = json.loads(source["content"])
+            sequence += source["revision"]
+            result["sources"].append({"id": cid, "revision": source["revision"]})
+            for zone in content["timezones"]:
+                if zone not in result["timezones"]:
+                    result["timezones"].append(zone)
+            for original in content["events"]:
+                e = dict(original)
+                e["_sequence"] = source["revision"]
+                e["uid"] = (
+                    hashlib.sha256(
+                        (row["id"] + "|" + cid + "|" + e["uid"]).encode()
+                    ).hexdigest()
+                    + "@timegrid"
+                )
+                ev = component(e["raw"], content["timezones"])
+                ev.pop("UID", None)
+                ev.add("UID", e["uid"])
+                e["raw"] = ev.to_ical().decode()
+                result["events"].append(e)
+        return result, sequence
+
+    @app.get("/api/folders")
+    @require()
+    def folders():
+        return {
+            "folders": [
+                {**dict(r), "sources": json.loads(r["sources"])}
+                for r in db().execute(
+                    "SELECT * FROM folders WHERE owner=? ORDER BY name", (user()["id"],)
+                )
+            ]
+        }
+
+    @app.post("/api/folders")
+    @require()
+    def create_folder():
+        name = str(body().get("name", "")).strip()[:100]
+        if not name:
+            problem("Name your calendar folder.")
+        if (
+            db()
+            .execute("SELECT count(*) FROM folders WHERE owner=?", (user()["id"],))
+            .fetchone()[0]
+            >= 30
+        ):
+            problem("You can manage up to 30 folders.")
+        fid = identifier()
+        db().execute(
+            "INSERT INTO folders VALUES(?,?,?,?,?,?)",
+            (fid, user()["id"], name, "[]", secrets.token_urlsafe(32), 1),
+        )
+        db().commit()
+        return {"id": fid}, 201
+
+    @app.post("/api/folders/<fid>")
+    @require()
+    def update_folder(fid):
+        row = folder(fid)
+        b = body()
+        name = str(b.get("name", row["name"])).strip()[:100]
+        ids = b.get("sources", json.loads(row["sources"]))
+        if (
+            not name
+            or not isinstance(ids, list)
+            or len(ids) > 50
+            or any(not isinstance(x, str) for x in ids)
+        ):
+            problem("Choose a name and up to 50 source calendars.")
+        ids = list(dict.fromkeys(calendar(x)["id"] for x in ids))
+        db().execute(
+            "UPDATE folders SET name=?,sources=?,revision=revision+1 WHERE id=?",
+            (name, dump(ids), fid),
+        )
+        db().commit()
+        return {"ok": True}
+
+    @app.delete("/api/folders/<fid>")
+    @require()
+    def delete_folder(fid):
+        folder(fid)
+        db().execute("DELETE FROM folders WHERE id=?", (fid,))
+        db().commit()
+        return {"ok": True}
+
+    @app.post("/api/folders/<fid>/rotate")
+    @require()
+    def rotate_folder(fid):
+        folder(fid)
+        db().execute(
+            "UPDATE folders SET token=? WHERE id=?", (secrets.token_urlsafe(32), fid)
+        )
+        db().commit()
+        return {"ok": True}
+
+    @app.get("/api/folders/<fid>/preview")
+    @require()
+    def folder_preview(fid):
+        content, _ = folder_content(folder(fid))
+        try:
+            return preview(
+                content, request.args.get("start", ""), request.args.get("end", "")
+            )
+        except (ValueError, TypeError):
+            problem("Choose a valid date range of up to six weeks.")
+
+    @app.get("/personal/<token>.ics")
+    def personal_feed(token):
+        row = db().execute("SELECT * FROM folders WHERE token=?", (token,)).fetchone()
+        if not row:
+            problem("Subscription not found.", 404)
+        content, sequence = folder_content(row)
+        response = app.response_class(
+            export_ics(content, sequence), mimetype="text/calendar"
+        )
+        response.headers["Cache-Control"] = "private, no-cache"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.set_etag(hashlib.sha256(response.data).hexdigest())
+        return response.make_conditional(request)
 
     @app.get("/bundle/<slug>.ics")
     @app.get("/feeds/<slug>.ics")

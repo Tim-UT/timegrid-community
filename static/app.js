@@ -55,6 +55,7 @@ function accounts() {
   $("#account").innerHTML = u
     ? `<span>${esc(u.username)}</span><button id="logout" class="quiet">Sign out</button>`
     : '<button id="signin" class="quiet">Sign in</button>';
+  $("#folders-link").hidden = !u;
   $("#manage-link").hidden = u?.role !== "manager";
   if (u)
     $("#logout").onclick = safe(async () => {
@@ -161,7 +162,7 @@ async function explore() {
         searchParams($("#search"), $("#search [name=q]").value),
     );
     $("#results").innerHTML = data.calendars.length
-      ? `<div class="explore-calendars">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><ul class="sample-entries">${(c.sample_entries || []).map((e) => `<li><span class="pill">${esc(e.type)}</span> ${esc(e.title)}</li>`).join("")}</ul><div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
+      ? `<div class="explore-calendars">${data.calendars.map((c) => `<article class="card"><div class="row between"><span class="meta">${c.event_count} events · revision ${c.revision}</span><label class="check"><input type="checkbox" name="combine" value="${esc(c.id)}" aria-label="Select ${esc(c.title)} for combination"></label></div><h2><a href="/calendars/${esc(c.slug)}">${esc(c.title)}</a></h2><p>${esc(c.description || "A community-maintained calendar.")}</p><div class="tags">${tags(c.hashtags)}</div><ul class="sample-entries">${(c.sample_entries || []).map((e) => `<li><span class="pill">${esc(e.type)}</span> ${esc(e.title)}</li>`).join("")}</ul>${auth.user ? `<p><a href="/my-calendars?add=${esc(c.id)}">Add to my calendars</a></p>` : ""}<div class="bottom"><a href="/calendars/${esc(c.slug)}">View calendar ↗</a><a class="quiet button" href="/feeds/${esc(c.slug)}.ics">↓ ICS</a></div></article>`).join("")}</div>`
       : '<div class="empty"><h2>No matching calendars</h2><p>Try different words or remove an advanced search filter.</p><a href="/contribute">Contribute a calendar →</a></div>';
   };
   $("#search").onsubmit = safe(async (e) => {
@@ -185,7 +186,13 @@ async function detail(slug) {
     content = c.content;
   const url = location.origin + "/feeds/" + c.slug + ".ics";
   app.innerHTML = `<div class="top"><div><a href="/">← Calendar repository</a><h1>${esc(content.title)}</h1><p>${esc(content.description)}</p><div class="tags">${tags(content.hashtags)}</div></div><a class="button" href="/contribute?edit=${esc(c.slug)}">Propose an edit</a></div><div class="split"><section class="panel" id="public-calendar"></section><aside class="stack"><section class="panel"><p class="eyebrow">SUBSCRIBE</p><h2>Keep your calendar in sync</h2><p class="hint">Paste this subscription URL into Apple Calendar, Google Calendar, Outlook, or another calendar app. Accepted updates appear when your app refreshes.</p><label>Subscription URL<input class="feed-url" id="feed-url" readonly value="${esc(url)}"></label><div class="row"><button id="copy-feed">Copy URL</button><a href="${esc(url)}" class="button quiet">Download ICS</a></div><p class="hint">An ICS download is a snapshot. A URL subscription receives updates.</p></section><section class="panel"><h3>Publication history</h3><p class="meta">Current revision ${c.revision}</p><div id="history"></div>${content.sources.length ? `<h3>Combined from</h3>${content.sources.map((s) => `<p class="meta"><a href="/calendars/${esc(s.id)}">Source calendar</a> · revision ${s.revision}</p>`).join("")}<p class="hint">Combined calendars are reviewed snapshots of their sources.</p>` : ""}</section></aside></div>`;
+
   publicMonth($("#public-calendar"), c);
+  if (auth.user)
+    $("#public-calendar").insertAdjacentHTML(
+      "afterbegin",
+      `<p><a class="button quiet" href="/my-calendars?add=${esc(c.id)}">Add to my calendars</a></p>`,
+    );
   $("#copy-feed").onclick = safe(async () => {
     await navigator.clipboard.writeText(url);
     notify("Subscription URL copied.");
@@ -1163,6 +1170,147 @@ async function dashboard(manager = false) {
   );
 }
 
+async function myCalendars() {
+  if (!gate()) return;
+  const [{ folders }, { calendars }] = await Promise.all([
+    api("/api/folders"),
+    api("/api/calendars"),
+  ]);
+  const incoming = new URLSearchParams(location.search).get("add");
+  app.innerHTML = `<div class="top"><div><p class="eyebrow">MY CALENDARS</p><h1>Your life, your calendars.</h1><p>Create separate folders for Life, Work, or any part of your schedule. Each folder has one live subscription link.</p></div></div><form id="new-folder" class="tools"><input name="name" required maxlength="100" aria-label="New folder name" placeholder="Folder name, e.g. Work"><button>Create folder</button></form>${incoming ? '<p class="hint">Open a folder below to add the calendar you selected.</p>' : ""}<div class="folder-layout"><aside class="panel"><h2>Folders</h2><div id="folder-list">${folders.map((f) => `<button class="quiet folder-open" data-id="${esc(f.id)}">${esc(f.name)} · ${f.sources.length} sources</button>`).join("") || "<p>Create your first folder above.</p>"}</div></aside><section id="folder-detail" class="panel"><p>Select a folder to manage its calendars and subscription.</p></section></div>`;
+  $("#new-folder").onsubmit = safe(async (e) => {
+    e.preventDefault();
+    const r = await api("/api/folders", {
+      method: "POST",
+      body: { name: e.target.elements.name.value },
+    });
+    await myCalendars();
+    document.querySelector(`.folder-open[data-id="${r.id}"]`).click();
+  });
+  let opened = 0;
+  async function open(f) {
+    const generation = ++opened;
+    const chosen = new Set(f.sources);
+    let shown = [],
+      serial = 0;
+    const url = location.origin + "/personal/" + f.token + ".ics";
+    $("#folder-detail").innerHTML =
+      `<h2>${esc(f.name)}</h2><label>Folder name<input id="folder-name" maxlength="100" value="${esc(f.name)}"></label><label>Subscription link<input id="folder-feed" readonly value="${esc(url)}"></label><div class="row"><button type="button" id="copy-folder">Copy subscription link</button><a class="button quiet" href="${esc(url)}">Download ICS</a></div><p class="hint">This link always includes the latest approved versions of your saved sources. Calendar apps refresh on their own schedule. Anyone with this private link can read the folder; resetting it disables the old link.</p>${incoming && !chosen.has(incoming) ? '<button id="add-incoming" class="quiet">Select the calendar you brought here</button>' : ""}<h3>Selected sources <span id="folder-count"></span></h3><div id="selected-sources"></div><label>Find calendars<input id="folder-search" type="search" placeholder="Search events, locations, or hashtags"></label>${searchTools("folder")}<div class="source-results" id="folder-results"></div><p id="folder-message" role="status"></p><button id="save-folder">Save folder</button><p class="hint">Save source selections to update your subscription. The preview below shows saved selections.</p><div id="folder-preview"></div><div class="row"><button id="reset-folder" class="quiet">Reset subscription link</button><button id="delete-folder" class="danger">Delete folder</button></div>`;
+    const selected = () => {
+      $("#folder-count").textContent = `(${chosen.size})`;
+      $("#selected-sources").innerHTML =
+        [...chosen]
+          .map(
+            (id) =>
+              `<div class="row between"><span>${esc(calendars.find((c) => c.id === id)?.title || "Calendar")}</span><button class="quiet" data-remove="${esc(id)}">Remove</button></div>`,
+          )
+          .join("") || '<p class="hint">No sources selected yet.</p>';
+      document.querySelectorAll("[data-remove]").forEach(
+        (b) =>
+          (b.onclick = () => {
+            chosen.delete(b.dataset.remove);
+            selected();
+            render();
+          }),
+      );
+    };
+    const render = () => {
+      $("#folder-results").innerHTML =
+        shown
+          .map(
+            (c) =>
+              `<label class="source-choice"><input type="checkbox" data-pick="${esc(c.id)}" ${chosen.has(c.id) ? "checked" : ""}><span><strong>${esc(c.title)}</strong><span class="tags">${tags(c.hashtags)}</span><span class="meta">${c.event_count} entries</span></span></label>`,
+          )
+          .join("") || "<p>No matching calendars.</p>";
+      document.querySelectorAll("[data-pick]").forEach(
+        (i) =>
+          (i.onchange = () => {
+            i.checked
+              ? chosen.add(i.dataset.pick)
+              : chosen.delete(i.dataset.pick);
+            selected();
+          }),
+      );
+    };
+    const search = safe(async () => {
+      const n = ++serial;
+      const data = await api(
+        "/api/calendars?" +
+          searchParams($("#folder-detail"), $("#folder-search").value),
+      );
+      if (n !== serial || generation !== opened || !$("#folder-results"))
+        return;
+      shown = data.calendars;
+      render();
+    });
+    selected();
+    await search();
+    if (generation !== opened) return;
+    $("#folder-search").oninput = search;
+    $("#folder-detail .advanced-search").oninput = search;
+    if ($("#add-incoming"))
+      $("#add-incoming").onclick = () => {
+        chosen.add(incoming);
+        selected();
+        render();
+        $("#add-incoming").hidden = true;
+      };
+    $("#copy-folder").onclick = safe(async () => {
+      await navigator.clipboard.writeText(url);
+      notify("Subscription link copied.");
+    });
+    $("#save-folder").onclick = safe(async () => {
+      await api("/api/folders/" + f.id, {
+        method: "POST",
+        body: { name: $("#folder-name").value, sources: [...chosen] },
+      });
+      f.name = $("#folder-name").value;
+      f.sources = [...chosen];
+      document.querySelector(`.folder-open[data-id="${f.id}"]`).textContent =
+        `${f.name} · ${chosen.size} sources`;
+      await open(f);
+      notify("Folder saved. Your subscription now follows these sources.");
+    });
+    $("#delete-folder").onclick = safe(async () => {
+      if (
+        !confirm(
+          "Delete this folder and disable its subscription link? Source calendars remain available.",
+        )
+      )
+        return;
+      await api("/api/folders/" + f.id, { method: "DELETE" });
+      await myCalendars();
+    });
+    $("#reset-folder").onclick = safe(async () => {
+      if (
+        !confirm(
+          "Disable the old subscription link and generate a new one? You will need to update your calendar app.",
+        )
+      )
+        return;
+      await api("/api/folders/" + f.id + "/rotate", { method: "POST" });
+      await myCalendars();
+      document.querySelector(`.folder-open[data-id="${f.id}"]`).click();
+    });
+    CalendarUI.monthPreview($("#folder-preview"), {
+      load: (start, end) =>
+        api(
+          "/api/folders/" +
+            f.id +
+            "/preview?" +
+            new URLSearchParams({ start, end }),
+        ),
+    });
+  }
+  document
+    .querySelectorAll(".folder-open")
+    .forEach(
+      (b) =>
+        (b.onclick = safe(() =>
+          open(folders.find((f) => f.id === b.dataset.id)),
+        )),
+    );
+}
 async function route() {
   const path = location.pathname;
   document
@@ -1170,6 +1318,7 @@ async function route() {
     .forEach((a) => a.classList.toggle("active", a.pathname === path));
   if (path.startsWith("/calendars/") || path.startsWith("/p/"))
     await detail(path.split("/")[2]);
+  else if (path === "/my-calendars") await myCalendars();
   else if (path === "/contribute") await editor();
   else if (path === "/dashboard") await dashboard();
   else if (path === "/manage") await dashboard(true);

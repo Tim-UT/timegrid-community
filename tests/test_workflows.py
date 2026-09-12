@@ -536,3 +536,72 @@ def test_parallel_conflict_and_overwrite(setup):
         == 200
     )
     assert not a.get("/api/calendars/" + slug).json["content"]["events"]
+
+
+def test_personal_folders_live_feed_privacy_and_lifecycle(setup):
+    a, m, slug = publish(setup)
+    other = client(setup, "other")
+    anon = client(setup)
+    source = a.get("/api/calendars/" + slug).json
+    assert anon.get("/api/folders").status_code == 401
+    r = post(a, "/api/folders", {"name": "Life"})
+    assert r.status_code == 201
+    fid = r.json["id"]
+    work = post(a, "/api/folders", {"name": "Work"}).json["id"]
+    assert (
+        post(a, "/api/folders/" + fid, {"sources": [source["id"]]}).status_code == 200
+    )
+    folder = next(f for f in a.get("/api/folders").json["folders"] if f["id"] == fid)
+    link = "/personal/" + folder["token"] + ".ics"
+    assert other.get("/api/folders").json["folders"] == []
+    assert post(other, "/api/folders/" + fid, {"name": "stolen"}).status_code == 404
+    assert (
+        other.get(
+            "/api/folders/" + fid + "/preview?start=2026-09-01&end=2026-10-01"
+        ).status_code
+        == 404
+    )
+    first = anon.get(link)
+    assert first.status_code == 200 and b"Orientation" in first.data
+    assert (
+        anon.get(link, headers={"If-None-Match": first.headers["ETag"]}).status_code
+        == 304
+    )
+    updated = copy.deepcopy(source["content"])
+    updated["events"][0]["title"] = "Latest source update"
+    pid = propose(a, updated, source["id"], 1)
+    post(m, "/api/proposals/" + pid + "/review", {"decision": "accept"})
+    latest = anon.get(link, headers={"If-None-Match": first.headers["ETag"]})
+    assert latest.status_code == 200 and b"Latest source update" in latest.data
+    assert b"Orientation" not in latest.data
+    assert post(a, "/api/folders/" + fid, {"sources": []}).status_code == 200
+    assert b"BEGIN:VEVENT" not in anon.get(link).data
+    assert post(a, "/api/folders/" + fid + "/rotate", {}).status_code == 200
+    assert anon.get(link).status_code == 404
+    token = next(
+        f["token"] for f in a.get("/api/folders").json["folders"] if f["id"] == fid
+    )
+    csrf = a.get("/api/session").json["csrf"]
+    assert (
+        a.delete("/api/folders/" + fid, headers={"X-CSRF-Token": csrf}).status_code
+        == 200
+    )
+    assert anon.get("/personal/" + token + ".ics").status_code == 404
+    assert a.get("/api/folders").json["folders"][0]["id"] == work
+
+
+def test_folder_combines_multiple_sources_with_distinct_uids(setup):
+    a, m, slug = publish(setup)
+    p = propose(a, content("Second source"))
+    r = post(m, "/api/proposals/" + p + "/review", {"decision": "accept"})
+    second = a.get("/api/calendars/" + r.json["slug"]).json
+    first = a.get("/api/calendars/" + slug).json
+    fid = post(a, "/api/folders", {"name": "Combined"}).json["id"]
+    post(a, "/api/folders/" + fid, {"sources": [first["id"], second["id"]]})
+    token = a.get("/api/folders").json["folders"][0]["token"]
+    from icalendar import Calendar
+
+    events = Calendar.from_ical(
+        client(setup).get("/personal/" + token + ".ics").data
+    ).walk("VEVENT")
+    assert len(events) == 2 and len({str(e["uid"]) for e in events}) == 2

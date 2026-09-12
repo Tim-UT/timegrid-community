@@ -1029,3 +1029,23 @@ dialog.merge-dialog {
   max-width: min(1100px, 94vw);
   color: var(--ink, #193040);
 }
+.folder-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.folder-open {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  text-align: left;
+}
+#folder-preview {
+  margin: 24px 0;
+}
+@media (max-width: 750px) {
+  .folder-layout {
+    grid-template-columns: 1fr;
+  }
+}
